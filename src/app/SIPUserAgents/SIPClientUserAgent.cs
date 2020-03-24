@@ -66,6 +66,11 @@ namespace SIPSorcery.SIP.App
         private RtccReserveInitialCreditDelegate RtccReserveInitialCredit_External;
         private RtccUpdateCdrDelegate RtccUpdateCdr_External;
 
+        /// <summary>
+        /// If not null this value will replace the default user agent value in Invite-Requests
+        /// </summary>
+        public string UserAgent { get; set; }
+
         public event SIPCallResponseDelegate CallTrying;
         public event SIPCallResponseDelegate CallRinging;
         public event SIPCallResponseDelegate CallAnswered;
@@ -79,6 +84,11 @@ namespace SIPSorcery.SIP.App
         public bool IsUACAnswered
         {
             get { return m_serverTransaction.TransactionFinalResponse != null; }
+        }
+
+        public bool CallCanceled
+        {
+            get { return m_callCancelled; }
         }
 
         public SIPDialogue SIPDialogue
@@ -846,7 +856,7 @@ namespace SIPSorcery.SIP.App
             inviteHeader.Contact = new List<SIPContactHeader>() { SIPContactHeader.GetDefaultSIPContactHeader() };
             inviteHeader.Contact[0].ContactURI.User = sipCallDescriptor.Username;
             inviteHeader.CSeqMethod = SIPMethodsEnum.INVITE;
-            inviteHeader.UserAgent = m_userAgent;
+            inviteHeader.UserAgent = (!UserAgent.IsNullOrBlank()) ? UserAgent : m_userAgent;
             inviteHeader.Routes = routeSet;
             inviteHeader.Supported = (PrackSupported == true) ? SIPExtensionHeaders.PRACK : null; // Let the uas know whether or not we're supporting reliable provisional responses.
 
