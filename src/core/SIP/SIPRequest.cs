@@ -49,6 +49,8 @@ namespace SIPSorcery.SIP
             }
         }
 
+        public SIPMessageBuffer MessageBuffer { get; private set; }
+
         private SIPRequest()
         { }
 
@@ -71,6 +73,7 @@ namespace SIPSorcery.SIP
             try
             {
                 SIPRequest sipRequest = new SIPRequest();
+                sipRequest.MessageBuffer = sipMessage;
                 sipRequest.LocalSIPEndPoint = sipMessage.LocalSIPEndPoint;
                 sipRequest.RemoteSIPEndPoint = sipMessage.RemoteSIPEndPoint;
 
@@ -156,23 +159,6 @@ namespace SIPSorcery.SIP
             catch (Exception excp)
             {
                 logger.LogError("Exception SIPRequest ToString. " + excp.Message);
-                throw excp;
-            }
-        }
-
-        public string ToStringShort()
-        {
-            try
-            {
-                string methodStr = (Method != SIPMethodsEnum.UNKNOWN) ? Method.ToString() : UnknownMethod;
-
-                string message = methodStr + " " + URI.ToString();
-
-                return message;
-            }
-            catch (Exception excp)
-            {
-                logger.LogError("Exception SIPRequest ToStringShort. ", excp);
                 throw excp;
             }
         }

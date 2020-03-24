@@ -74,7 +74,12 @@ namespace SIPSorcery.SIP.App
         public IMediaSession MediaSession { get; private set; }
 
         /// <summary>
-        /// Indicates whether there is an active call or not.
+        /// If not null this value will replace the default user agent value in Invite-Requests.
+        /// </summary>
+        public string UserAgent { get; set; }
+
+        /// <summary>
+        /// Indicates whether there is an active call or not
         /// </summary>
         public bool IsCallActive
         {
@@ -733,7 +738,7 @@ namespace SIPSorcery.SIP.App
                 Dialogue.SDP = sdp.ToString();
 
                 var reinviteRequest = Dialogue.GetInDialogRequest(SIPMethodsEnum.INVITE);
-                reinviteRequest.Header.UserAgent = m_userAgent;
+                reinviteRequest.Header.UserAgent = (!UserAgent.IsNullOrBlank()) ? UserAgent : m_userAgent;
                 reinviteRequest.Header.ContentType = m_sdpContentType;
                 reinviteRequest.Body = sdp.ToString();
                 reinviteRequest.Header.Supported = SIPExtensionHeaders.PRACK;

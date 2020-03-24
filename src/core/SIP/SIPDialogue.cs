@@ -82,6 +82,11 @@ namespace SIPSorcery.SIP
         public string CRMCompanyName { get; set; }
         public string CRMPictureURL { get; set; }
 
+        public SIPRequest SIPRequest    //rj2: SIPRequest (INVITE or not) this SIPDialogue was created from
+        {
+            get; private set;
+        }
+
         /// <summary>
         /// Used as a flag to indicate whether to send an immediate or slightly delayed re-INVITE request 
         /// when a call is answered as an attempt to help solve audio issues.
@@ -169,6 +174,7 @@ namespace SIPSorcery.SIP
             string adminMemberId)
         {
             Id = Guid.NewGuid();
+            this.SIPRequest = uasInviteTransaction.TransactionRequest;
 
             CallId = uasInviteTransaction.TransactionRequest.Header.CallId;
             //RouteSet = (uasInviteTransaction.TransactionFinalResponse != null && uasInviteTransaction.TransactionFinalResponse.Header.RecordRoutes != null) ? uasInviteTransaction.TransactionFinalResponse.Header.RecordRoutes.Reversed() : null;
@@ -216,6 +222,7 @@ namespace SIPSorcery.SIP
           string adminMemberId)
         {
             Id = Guid.NewGuid();
+            this.SIPRequest = uacInviteTransaction.TransactionRequest;
 
             CallId = uacInviteTransaction.TransactionRequest.Header.CallId;
             RouteSet = (uacInviteTransaction.TransactionFinalResponse != null && uacInviteTransaction.TransactionFinalResponse.Header.RecordRoutes != null) ? uacInviteTransaction.TransactionFinalResponse.Header.RecordRoutes.Reversed() : null;
@@ -270,6 +277,7 @@ namespace SIPSorcery.SIP
           string toTag)
         {
             Id = Guid.NewGuid();
+            this.SIPRequest = nonInviteRequest;
 
             CallId = nonInviteRequest.Header.CallId;
             RouteSet = (nonInviteRequest.Header.RecordRoutes != null) ? nonInviteRequest.Header.RecordRoutes.Reversed() : null;
@@ -306,7 +314,7 @@ namespace SIPSorcery.SIP
         /// </summary>
         /// <param name="sipTransport">The transport layer to use for sending the request.</param>
         /// <param name="outboundProxy">Optional. If set an end point that the BYE request will be directly forwarded to.</param>
-        public void Hangup(SIPTransport sipTransport, SIPEndPoint outboundProxy)
+        public void Hangup(SIPTransport sipTransport, SIPEndPoint outboundProxy, bool waitForAnswer = false)
         {
             try
             {
@@ -327,8 +335,33 @@ namespace SIPSorcery.SIP
                 }
 
                 SIPRequest byeRequest = GetInDialogRequest(SIPMethodsEnum.BYE);
+
+                //rj2: 2017-09-04
+                if (this.SIPRequest?.Header?.Vias?.TopViaHeader?.ViaParameters.Has("Alias") == true || SIPRequest?.Header?.Vias?.TopViaHeader?.ViaParameters.Has("alias") == true)
+                {
+                    SIPViaHeader via = this.SIPRequest?.Header?.Vias?.TopViaHeader;
+                    byeOutboundProxy = new SIPEndPoint(via.Transport, IPAddress.Parse(via.ReceivedFromIPAddress), via.ReceivedFromPort, null, null);
+                }
+
                 SIPNonInviteTransaction byeTransaction = new SIPNonInviteTransaction(sipTransport, byeRequest, byeOutboundProxy);
+                //rj2 issue #2993: wait for answor of bye-request
+                System.Threading.ManualResetEventSlim waitOK = new System.Threading.ManualResetEventSlim(!waitForAnswer);
+                byeTransaction.NonInviteTransactionFinalResponseReceived += (SIPEndPoint localSIPEndPoint, SIPEndPoint remoteEndPoint, SIPTransaction sipTransaction, SIPResponse sipResponse) =>
+                {
+                    try
+                    {
+                        waitOK.Set();
+                        return System.Threading.Tasks.Task.FromResult(System.Net.Sockets.SocketError.Success);
+                    }
+                    catch (Exception excp)
+                    {
+                        return System.Threading.Tasks.Task.FromResult(System.Net.Sockets.SocketError.Fault);
+                    }
+                };
+
                 byeTransaction.SendRequest();
+
+                waitOK.Wait(TimeSpan.FromSeconds(10));
             }
             catch (Exception excp)
             {

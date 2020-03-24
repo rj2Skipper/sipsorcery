@@ -59,6 +59,8 @@ namespace SIPSorcery.SIP
             get { return Header?.CSeqMethod + " " + StatusCode + " " + ReasonPhrase; }
         }
 
+        public SIPMessageBuffer MessageBuffer { get; private set; }
+
         private SIPResponse()
         { }
 
@@ -112,6 +114,7 @@ namespace SIPSorcery.SIP
             try
             {
                 SIPResponse sipResponse = new SIPResponse();
+                sipResponse.MessageBuffer = sipMessageBuffer;
                 sipResponse.LocalSIPEndPoint = sipMessageBuffer.LocalSIPEndPoint;
                 sipResponse.RemoteSIPEndPoint = sipMessageBuffer.RemoteSIPEndPoint;
                 string statusLine = sipMessageBuffer.FirstLine;
@@ -188,6 +191,7 @@ namespace SIPSorcery.SIP
 
             return message;
         }
+        
 
         /// <summary>
         /// Creates an identical copy of the SIP Response for the caller.

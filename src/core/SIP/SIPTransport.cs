@@ -39,7 +39,7 @@ namespace SIPSorcery.SIP
         private const int MAX_INMESSAGE_QUEUECOUNT = 5000;          // The maximum number of messages that can be stored in the incoming message queue.
         private const string RECEIVE_THREAD_NAME = "siptrans-recv";
 
-        public const string m_allowedSIPMethods = SIPConstants.ALLOWED_SIP_METHODS;
+        public static string m_allowedSIPMethods = SIPConstants.ALLOWED_SIP_METHODS;
 
         private static string m_looseRouteParameter = SIPConstants.SIP_LOOSEROUTER_PARAMETER;
         public static IPAddress BlackholeAddress = IPAddress.Any;  // (IPAddress.Any is 0.0.0.0) Any SIP messages with this IP address will be dropped.
