@@ -18,7 +18,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -42,6 +41,7 @@ namespace SIPSorcery.SIP.App
         private static readonly string m_sdpContentType = SDP.SDP_MIME_CONTENTTYPE;
         private static readonly string m_sipReferContentType = SIPMIMETypes.REFER_CONTENT_TYPE;
         private static string m_userAgent = SIPConstants.SIP_USERAGENT_STRING;
+        private static int WAIT_DIALOG_TIMEOUT = SIPTimings.T2;
 
         private static ILogger logger = Log.Logger;
 
@@ -74,7 +74,7 @@ namespace SIPSorcery.SIP.App
         public IMediaSession MediaSession { get; private set; }
 
         /// <summary>
-        /// Indicates whether there is an active call or not
+        /// Indicates whether there is an active call or not.
         /// </summary>
         public bool IsCallActive
         {
@@ -158,7 +158,7 @@ namespace SIPSorcery.SIP.App
         /// by us. An example of when this user agent will initiate a hang up is when a transfer is
         /// accepted by the remote calling party.
         /// </summary>
-        public event Action OnCallHungup;
+        public event Action<SIPDialogue> OnCallHungup;
 
         /// <summary>
         /// Fires when a NOTIFY request is received that contains an update about the 
@@ -238,9 +238,9 @@ namespace SIPSorcery.SIP.App
         /// <param name="mediaSession">The RTP session for the call.</param>
         public async Task<bool> Call(SIPCallDescriptor callDescriptor, IMediaSession mediaSession)
         {
-            await InitiateCallAsync(callDescriptor, mediaSession).ConfigureAwait(false);
-
             TaskCompletionSource<bool> callResult = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            await InitiateCallAsync(callDescriptor, mediaSession).ConfigureAwait(false);
 
             ClientCallAnswered += (uac, resp) =>
             {
@@ -408,32 +408,72 @@ namespace SIPSorcery.SIP.App
             {
                 Hangup();
             }
-
-            m_cts = new CancellationTokenSource();
-            var sipRequest = uas.ClientTransaction.TransactionRequest;
-
-            MediaSession = mediaSession;
-            MediaSession.OnRtpEvent += OnRemoteRtpEvent;
-            //MediaSession.OnRtpClosed += (reason) => Hangup();
-            MediaSession.OnRtpClosed += (reason) =>
+            else if (uas.IsCancelled)
             {
-                if (!MediaSession.IsClosed)
+                logger.LogDebug("The incoming call has been cancelled.");
+                mediaSession?.Close("call cancelled");
+            }
+            else
+            {
+                m_cts = new CancellationTokenSource();
+                var sipRequest = uas.ClientTransaction.TransactionRequest;
+
+                MediaSession = mediaSession;
+                MediaSession.OnRtpEvent += OnRemoteRtpEvent;
+                //MediaSession.OnRtpClosed += (reason) => Hangup();
+                MediaSession.OnRtpClosed += (reason) =>
                 {
-                    logger.LogWarning($"RTP channel was closed with reason {reason}.");
+                    if (!MediaSession.IsClosed)
+                    {
+                        logger.LogWarning($"RTP channel was closed with reason {reason}.");
+                    }
+                };
+
+                string sdp = null;
+
+                if (!String.IsNullOrEmpty(sipRequest.Body))
+                {
+                    SDP remoteSdp = SDP.ParseSDPDescription(sipRequest.Body);
+                    MediaSession.setRemoteDescription(new RTCSessionDescription { sdp = remoteSdp, type = RTCSdpType.offer });
+
+                    var sdpAnswer = await MediaSession.createAnswer(null).ConfigureAwait(false);
+                    MediaSession.setLocalDescription(new RTCSessionDescription { sdp = sdpAnswer, type = RTCSdpType.answer });
+
+                    sdp = sdpAnswer.ToString();
                 }
-            };
+                else
+                {
+                    // No SDP offer was included in the INVITE request need to wait for the ACK.
+                    var sdpOffer = await MediaSession.createOffer(null).ConfigureAwait(false);
+                    MediaSession.setLocalDescription(new RTCSessionDescription { sdp = sdpOffer, type = RTCSdpType.offer });
 
-            SDP remoteSdp = SDP.ParseSDPDescription(sipRequest.Body);
-            MediaSession.setRemoteDescription(new RTCSessionDescription { sdp = remoteSdp, type = RTCSdpType.offer });
+                    sdp = sdpOffer.ToString();
+                }
 
-            var sdpAnswer = await MediaSession.createAnswer(null).ConfigureAwait(false);
-            MediaSession.setLocalDescription(new RTCSessionDescription { sdp = sdpAnswer, type = RTCSdpType.answer });
+                await MediaSession.Start().ConfigureAwait(false);
 
-            await MediaSession.Start().ConfigureAwait(false);
+                m_uas = uas;
 
-            m_uas = uas;
-            m_uas.Answer(m_sdpContentType, sdpAnswer.ToString(), null, SIPDialogueTransferModesEnum.Default, customHeaders);
-            Dialogue.DialogueState = SIPDialogueStateEnum.Confirmed;
+                TaskCompletionSource<SIPDialogue> dialogueCreatedTcs = new TaskCompletionSource<SIPDialogue>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                m_uas.OnDialogueCreated += (dialogue) => dialogueCreatedTcs.TrySetResult(dialogue);
+
+                m_uas.Answer(m_sdpContentType, sdp, null, SIPDialogueTransferModesEnum.Default, customHeaders);
+
+                await Task.WhenAny(dialogueCreatedTcs.Task, Task.Delay(WAIT_DIALOG_TIMEOUT)).ConfigureAwait(false);
+
+                if (Dialogue != null)
+                {
+                    Dialogue.DialogueState = SIPDialogueStateEnum.Confirmed;
+                }
+                else
+                {
+                    logger.LogWarning("The attempt to answer a call failed as the dialog was not created. The likely cause is the ACK not being received in time.");
+
+                    MediaSession.Close("dialog creation failed");
+                    Hangup();
+                }
+            }
         }
 
         /// <summary>
@@ -914,6 +954,8 @@ namespace SIPSorcery.SIP.App
         /// </summary>
         private void CallEnded()
         {
+            var dialogue = Dialogue;
+
             m_uac = null;
             m_uas = null;
 
@@ -923,7 +965,7 @@ namespace SIPSorcery.SIP.App
                 MediaSession = null;
             }
 
-            OnCallHungup?.Invoke();
+            OnCallHungup?.Invoke(dialogue);
         }
 
         /// <summary>
