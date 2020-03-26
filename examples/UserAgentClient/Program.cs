@@ -17,6 +17,7 @@
 //-----------------------------------------------------------------------------
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -67,7 +68,12 @@ namespace SIPSorcery
             var dstAddress = lookupResult.GetSIPEndPoint().Address;
 
             // Initialise an RTP session to receive the RTP packets from the remote SIP server.
-            var rtpSession = new RtpAVSession(dstAddress.AddressFamily, new AudioOptions { AudioSource = AudioSourcesEnum.Microphone }, null);
+            var audioOptions = new AudioOptions
+            {
+                AudioSource = AudioSourcesEnum.Microphone,
+                AudioCodecs = new List<SDPMediaFormatsEnum> { SDPMediaFormatsEnum.PCMA, SDPMediaFormatsEnum.PCMU }
+            };
+            var rtpSession = new RtpAVSession(dstAddress.AddressFamily, audioOptions, null);
             var offerSDP = await rtpSession.createOffer(new RTCOfferOptions { RemoteSignallingAddress = dstAddress });
 
             // Create a client user agent to place a call to a remote SIP server along with event handlers for the different stages of the call.
@@ -85,7 +91,7 @@ namespace SIPSorcery
                 {
                     Log.LogInformation($"{uac.CallDescriptor.To} Answered: {resp.StatusCode} {resp.ReasonPhrase}.");
 
-                    rtpSession.setRemoteDescription(new RTCSessionDescription { type = RTCSdpType.answer, sdp = SDP.ParseSDPDescription(resp.Body) } );
+                    rtpSession.setRemoteDescription(new RTCSessionDescription { type = RTCSdpType.answer, sdp = SDP.ParseSDPDescription(resp.Body) });
                     rtpSession.Start();
                 }
                 else
