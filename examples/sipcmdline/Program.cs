@@ -45,10 +45,15 @@
 // sipcmdline -d 127.0.0.1;transport=tcp   # scheme: sip  & transport: TCP
 // sipcmdline -d 127.0.0.1;transport=tls   # scheme: sip  & transport: TLS
 // sipcmdline -d sips:100@127.0.0.1        # scheme: sips & transport: TLS
+//
+// Generate client call load:
+// Server: sipp -sn uas
+// Client: dotnet run -- -d 127.0.0.1 -c 1000 -x 10 -s uac -b true # Test attempts 10 concurrent calls and a total of 1000.
 //-----------------------------------------------------------------------------
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
@@ -60,6 +65,7 @@ using CommandLine.Text;
 using Microsoft.Extensions.Logging;
 using Serilog;
 using Serilog.Sinks.SystemConsole.Themes;
+using SIPSorcery.Media;
 using SIPSorcery.Net;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
@@ -143,6 +149,9 @@ namespace SIPSorcery
             {
                 logger.LogDebug($"RunCommand scenario {options.Scenario}, destination {options.Destination}");
 
+                Stopwatch sw = new Stopwatch();
+                sw.Start();
+
                 CancellationTokenSource cts = new CancellationTokenSource();
                 int taskCount = 0;
                 int successCount = 0;
@@ -183,12 +192,14 @@ namespace SIPSorcery
                 // Wait for all the concurrent tasks to complete.
                 await Task.WhenAll(tasks.ToArray());
 
+                sw.Stop();
+
                 DNSManager.Stop();
 
                 // Give the transport half a second to shutdown (puts the log messages in a better sequence).
                 await Task.Delay(500);
 
-                logger.LogInformation($"=> Command completed task count {taskCount} success count {successCount}.");
+                logger.LogInformation($"=> Command completed task count {taskCount} success count {successCount} duration {sw.Elapsed.TotalSeconds:0.##}s.");
             }
             catch (Exception excp)
             {
@@ -419,7 +430,11 @@ namespace SIPSorcery
                 ua.ClientCallFailed += (uac, err) => logger.LogWarning($"{uac.CallDescriptor.To} Failed: {err}");
                 ua.ClientCallAnswered += (uac, resp) => logger.LogInformation($"{uac.CallDescriptor.To} Answered: {resp.StatusCode} {resp.ReasonPhrase}.");
 
-                var result = await ua.Call(dst.ToString(), null, null, new RtpSessionLight());
+                var audioOptions = new DummyAudioOptions { AudioSource = DummyAudioSourcesEnum.Silence };
+                var rtpAudioSession = new RtpAudioSession(audioOptions, new List<SDPMediaFormatsEnum> { SDPMediaFormatsEnum.PCMU });
+
+                var result = await ua.Call(dst.ToString(), null, null, rtpAudioSession);
+                await rtpAudioSession.Start();
 
                 ua.Hangup();
 

@@ -76,6 +76,8 @@ namespace SIPSorcery.SIP.App
         public event SIPCallResponseDelegate CallAnswered;
         public event SIPCallFailedDelegate CallFailed;
 
+        public Func<SIPRequest, SIPRequest> AdjustInvite;
+
         public UACInviteTransaction ServerTransaction
         {
             get { return m_serverTransaction; }
@@ -791,6 +793,11 @@ namespace SIPSorcery.SIP.App
             catch (Exception excp)
             {
                 logger.LogError("Exception Parsing CustomHeader for GetInviteRequest. " + excp.Message + sipCallDescriptor.CustomHeaders);
+            }
+
+            if (AdjustInvite != null)
+            {
+                inviteRequest = AdjustInvite(inviteRequest);
             }
 
             return inviteRequest;
