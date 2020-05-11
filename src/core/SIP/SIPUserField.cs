@@ -40,7 +40,7 @@ namespace SIPSorcery.SIP
     /// parameters, not URI parameters.
     /// </summary>
     [DataContract]
-    public class SIPUserField
+    public class SIPUserField:IDisposable
     {
         private const char PARAM_TAG_DELIMITER = ';';
 
@@ -189,6 +189,12 @@ namespace SIPSorcery.SIP
             copy.Parameters = Parameters.CopyOf();
 
             return copy;
+        }
+
+        public void Dispose()
+        {
+            this.URI?.Dispose();
+            this.Parameters?.Dispose();
         }
     }
 }

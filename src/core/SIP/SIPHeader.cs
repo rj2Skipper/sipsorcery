@@ -40,7 +40,7 @@ namespace SIPSorcery.SIP
     /// with missing branches then in theory it should be safe to proceed. It will be left up to the SIPTransaction
     /// class to reject any SIP requests that are missing the necessary branch.
     /// </summary>
-    public class SIPViaHeader
+    public class SIPViaHeader:IDisposable
     {
         private static char m_paramDelimChar = ';';
         private static char m_hostDelimChar = ':';
@@ -359,6 +359,11 @@ namespace SIPSorcery.SIP
 
             return sipViaHeader;
         }
+
+        public void Dispose()
+        {
+            this.ViaParameters?.Dispose();
+        }
     }
 
     /// <bnf>
@@ -375,7 +380,7 @@ namespace SIPSorcery.SIP
     /// The From header only has parameters, no headers. Parameters of from ...;name=value;name2=value2.
     /// Specific parameters: tag.
     /// </remarks>
-    public class SIPFromHeader
+    public class SIPFromHeader:IDisposable
     {
         //public const string DEFAULT_FROM_NAME = SIPConstants.SIP_DEFAULT_USERNAME;
         public const string DEFAULT_FROM_URI = SIPConstants.SIP_DEFAULT_FROMURI;
@@ -479,6 +484,13 @@ namespace SIPSorcery.SIP
             caller = (!string.IsNullOrEmpty(FromName)) ? FromName + " " + caller : caller;
             return caller;
         }
+
+        public void Dispose()
+        {
+            this.FromParameters?.Dispose();
+            this.FromURI?.Dispose();
+            this.m_userField?.Dispose();
+        }
     }
 
     /// <bnf>
@@ -494,7 +506,7 @@ namespace SIPSorcery.SIP
     /// The To header only has parameters, no headers. Parameters of from ...;name=value;name2=value2.
     /// Specific parameters: tag.
     /// </remarks>
-    public class SIPToHeader
+    public class SIPToHeader:IDisposable
     {
         public const string PARAMETER_TAG = SIPHeaderAncillary.SIP_HEADERANC_TAG;
 
@@ -575,6 +587,13 @@ namespace SIPSorcery.SIP
         {
             return m_userField.ToString();
         }
+
+        public void Dispose()
+        {
+            this.ToParameters?.Dispose();
+            this.ToURI?.Dispose();
+            this.m_userField?.Dispose();
+        }
     }
 
     /// <bnf>
@@ -597,7 +616,7 @@ namespace SIPSorcery.SIP
     /// Specific parameters: q, expires.
     /// </remarks>
     [DataContract]
-    public class SIPContactHeader
+    public class SIPContactHeader:IDisposable
     {
         public const string EXPIRES_PARAMETER_KEY = "expires";
         public const string QVALUE_PARAMETER_KEY = "q";
@@ -813,6 +832,13 @@ namespace SIPSorcery.SIP
 
             return copy;
         }
+
+        public void Dispose()
+        {
+            this.ContactURI?.Dispose();
+            this.ContactParameters?.Dispose();
+            this.m_userField?.Dispose();
+        }
     }
 
     public class SIPAuthenticationHeader
@@ -914,7 +940,7 @@ namespace SIPSorcery.SIP
     /// The Route and Record-Route headers only have parameters, no headers. Parameters of from ...;name=value;name2=value2
     /// There are no specific parameters.
     /// </remarks>
-    public class SIPRoute
+    public class SIPRoute:IDisposable
     {
         private static string m_looseRouterParameter = SIPConstants.SIP_LOOSEROUTER_PARAMETER;
 
@@ -1022,9 +1048,15 @@ namespace SIPSorcery.SIP
         {
             return URI.ToSIPEndPoint();
         }
+
+        public void Dispose()
+        {
+            this.URI?.Dispose();
+            this.m_userField?.Dispose();
+        }
     }
 
-    public class SIPRouteSet
+    public class SIPRouteSet:IDisposable
     {
         private List<SIPRoute> m_sipRoutes = new List<SIPRoute>();
 
@@ -1177,9 +1209,14 @@ namespace SIPSorcery.SIP
 
             return routeStr;
         }
+
+        public void Dispose()
+        {
+            this.m_sipRoutes?.Clear();
+        }
     }
 
-    public class SIPViaSet
+    public class SIPViaSet:IDisposable
     {
         private static string m_CRLF = SIPConstants.CRLF;
 
@@ -1291,13 +1328,18 @@ namespace SIPSorcery.SIP
 
             return viaStr;
         }
+
+        public void Dispose()
+        {
+            this.m_viaHeaders?.Clear();
+        }
     }
 
     /// <bnf>
     /// header  =  "header-name" HCOLON header-value *(COMMA header-value)
     /// field-name: field-value CRLF
     /// </bnf>
-    public class SIPHeader
+    public class SIPHeader:IDisposable
     {
         public const int DEFAULT_CSEQ = 100;
 
@@ -2250,6 +2292,16 @@ namespace SIPSorcery.SIP
 
                 return lst;
             }
+        }
+
+        public void Dispose()
+        {
+            this.Contact?.Clear();
+            this.From?.Dispose();
+            this.To?.Dispose();
+            this.Routes?.Dispose();
+            this.RecordRoutes?.Dispose();
+            this.Vias?.Dispose();
         }
     }
 }

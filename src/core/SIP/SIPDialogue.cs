@@ -44,7 +44,7 @@ namespace SIPSorcery.SIP
     /// from the UAS. In practice it's been noted that if a UAS (initial UAS) sends an in-dialogue request with a CSeq less than the
     /// UAC's CSeq it can cause problems. To avoid this issue when generating requests the remote CSeq is always used.
     /// </remarks>
-    public class SIPDialogue
+    public class SIPDialogue:IDisposable
     {
         protected static ILogger logger = Log.Logger;
 
@@ -393,6 +393,15 @@ namespace SIPSorcery.SIP
             inDialogRequest.Header.Vias.PushViaHeader(SIPViaHeader.GetDefaultSIPViaHeader());
 
             return inDialogRequest;
+        }
+
+        public void Dispose()
+        {
+            this.RouteSet?.Dispose();
+            this.LocalUserField?.Dispose();
+            this.RemoteUserField?.Dispose();
+            this.RemoteTarget?.Dispose();
+            this?.SIPRequest?.Dispose();
         }
     }
 }

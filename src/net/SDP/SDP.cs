@@ -109,7 +109,7 @@ using SIPSorcery.Sys;
 
 namespace SIPSorcery.Net
 {
-    public class SDP
+    public class SDP:IDisposable
     {
         public const string CRLF = "\r\n";
         public const string SDP_MIME_CONTENTTYPE = "application/sdp";
@@ -582,6 +582,14 @@ namespace SIPSorcery.Net
                     return MediaStreamStatusEnum.SendRecv;
                 }
             }
+        }
+
+        public void Dispose()
+        {
+            this.BandwidthAttributes?.Clear();
+            this.IceCandidates?.Clear();
+            this.Media?.Clear();
+            this.ExtraSessionAttributes?.Clear();
         }
     }
 }

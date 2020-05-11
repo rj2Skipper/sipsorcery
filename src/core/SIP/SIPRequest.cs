@@ -308,5 +308,13 @@ namespace SIPSorcery.SIP
 
             return request;
         }
+
+        public override void Dispose()
+        {
+            this.URI?.Dispose();
+            this.ReceivedRoute?.Dispose();
+            base.Dispose();
+
+        }
     }
 }

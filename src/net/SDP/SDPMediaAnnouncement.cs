@@ -21,7 +21,7 @@ using System.Text.RegularExpressions;
 
 namespace SIPSorcery.Net
 {
-    public class SDPMediaAnnouncement
+    public class SDPMediaAnnouncement:IDisposable
     {
         public const string MEDIA_FORMAT_ATTRIBUE_PREFIX = "a=rtpmap:";
         public const string MEDIA_FORMAT_PARAMETERS_ATTRIBUE_PREFIX = "a=fmtp:";
@@ -276,6 +276,15 @@ namespace SIPSorcery.Net
         public void AddCryptoLine(string crypto)
         {
             this.SecurityDescriptions.Add(SDPSecurityDescription.Parse(crypto));
+        }
+
+        public void Dispose()
+        {
+            this.BandwidthAttributes?.Clear();
+            this.MediaFormats?.Clear();
+            this.IceCandidates?.Clear();
+            this.ExtraMediaAttributes?.Clear();
+            this.SecurityDescriptions?.Clear();
         }
     }
 }

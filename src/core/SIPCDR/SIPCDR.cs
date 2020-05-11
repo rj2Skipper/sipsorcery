@@ -34,7 +34,7 @@ namespace SIPSorcery.SIP
     /// Call detail record for a SIP call.
     /// </summary>
     [DataContract]
-    public class SIPCDR
+    public class SIPCDR:IDisposable
     {
         private static ILogger logger = Log.Logger;
         private static string m_newLine = Environment.NewLine;
@@ -283,6 +283,13 @@ namespace SIPSorcery.SIP
             {
                 logger.LogError("Exception SIPCDR Updated. " + excp);
             }
+        }
+
+        public void Dispose()
+        {
+            this.Destination?.Dispose();
+            this.From?.Dispose();
+            
         }
     }
 }

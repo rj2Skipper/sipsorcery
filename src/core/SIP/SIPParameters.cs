@@ -42,7 +42,7 @@ namespace SIPSorcery.SIP
     /// </code>
     /// </summary>
     [DataContract]
-    public class SIPParameters
+    public class SIPParameters :IDisposable
     {
         private const char TAG_NAME_VALUE_SEPERATOR = '=';
         private const char QUOTE = '"';
@@ -330,6 +330,11 @@ namespace SIPSorcery.SIP
         public override bool Equals(object obj)
         {
             return AreEqual(this, (SIPParameters)obj);
+        }
+
+        public void Dispose()
+        {
+            this.m_dictionary?.Clear();
         }
 
         /// <summary>

@@ -71,7 +71,7 @@ namespace SIPSorcery.SIP
     ///     transaction, except for ACK, where the method of the request
     ///     that created the transaction is INVITE.
     /// </note>
-    public class SIPTransaction
+    public class SIPTransaction:IDisposable
     {
         protected static ILogger logger = Log.Logger;
 
@@ -664,6 +664,15 @@ namespace SIPSorcery.SIP
             {
                 logger.LogError("Exception FireTransactionTraceMessage. " + excp.Message);
             }
+        }
+
+        public virtual void Dispose()
+        {
+            this.RemoveEventHandlers();
+            this.AckRequest?.Dispose();
+            this.PRackRequest?.Dispose();
+            this.m_transactionRequest?.Dispose();
+            this.CDR?.Dispose();
         }
 
         #endregion

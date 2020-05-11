@@ -21,7 +21,7 @@ using SIPSorcery.Sys;
 
 namespace SIPSorcery.SIP
 {
-    public class SIPMessageBase
+    public class SIPMessageBase:IDisposable
     {
         protected static ILogger logger = Log.Logger;
 
@@ -65,5 +65,10 @@ namespace SIPSorcery.SIP
         /// when sending this request/response.
         /// </summary>
         public string SendFromHintConnectionID;
+
+        public virtual void Dispose()
+        {
+            this.Header?.Dispose();
+        }
     }
 }

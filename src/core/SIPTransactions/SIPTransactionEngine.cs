@@ -26,7 +26,7 @@ using SIPSorcery.Sys;
 
 namespace SIPSorcery.SIP
 {
-    internal class SIPTransactionEngine
+    internal class SIPTransactionEngine:IDisposable
     {
         private const string TXENGINE_THREAD_NAME = "sip-txengine";
         private const int MAX_TXCHECK_WAIT_MILLISECONDS = 200; // Time to wait between checking for new pending transactions.
@@ -250,7 +250,11 @@ namespace SIPSorcery.SIP
         /// <param name="transactionId"></param>
         private void RemoveTransaction(string transactionId)
         {
-            m_pendingTransactions.TryRemove(transactionId, out _);
+            if(m_pendingTransactions.TryRemove(transactionId, out SIPTransaction transaction))
+            {
+                transaction.Dispose();
+            }
+
         }
 
         private void RemoveTransaction(SIPTransaction transaction)
@@ -670,6 +674,11 @@ namespace SIPSorcery.SIP
             {
                 logger.LogError("Exception RemoveExpiredTransaction. " + excp.Message);
             }
+        }
+
+        public void Dispose()
+        {
+            this.m_pendingTransactions?.Clear();
         }
     }
 }

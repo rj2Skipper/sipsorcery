@@ -22,7 +22,7 @@ using SIPSorcery.Sys;
 namespace SIPSorcery.SIP
 {
     [DataContract]
-    public class SIPParameterlessURI
+    public class SIPParameterlessURI:IDisposable
     {
         private static ILogger logger = Log.Logger;
 
@@ -112,6 +112,11 @@ namespace SIPSorcery.SIP
             {
                 return false;
             }
+        }
+
+        public void Dispose()
+        {
+            this.m_uri?.Dispose();
         }
     }
 }

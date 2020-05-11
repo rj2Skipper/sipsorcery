@@ -26,7 +26,7 @@ namespace SIPSorcery.SIP
     /// Implements the SIP URI concept from the SIP RFC3261.
     /// </summary>
     [DataContract]
-    public class SIPURI
+    public class SIPURI:IDisposable
     {
         public const int DNS_RESOLUTION_TIMEOUT = 2000;    // Timeout for resolving DNS hosts in milliseconds.
 
@@ -599,6 +599,12 @@ namespace SIPSorcery.SIP
             }
 
             return copy;
+        }
+
+        public void Dispose()
+        {
+            this.Headers?.Dispose();
+            this.Parameters?.Dispose();
         }
     }
 }
