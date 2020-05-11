@@ -139,7 +139,7 @@ namespace SIPSorcery.SIP
                 ResolveSIPEndPoint_External = sipResolver;
             }
 
-            if(stateless)
+            if (stateless)
             {
                 m_queueIncoming = false;
             }
@@ -696,7 +696,7 @@ namespace SIPSorcery.SIP
                         m_inMessageQueue.TryDequeue(out var incomingMessage);
                         if (incomingMessage != null)
                         {
-                           SIPMessageReceived(incomingMessage.LocalSIPChannel, incomingMessage.LocalEndPoint, incomingMessage.RemoteEndPoint, incomingMessage.Buffer).Wait();
+                            SIPMessageReceived(incomingMessage.LocalSIPChannel, incomingMessage.LocalEndPoint, incomingMessage.RemoteEndPoint, incomingMessage.Buffer).Wait();
                         }
                     }
 
@@ -759,7 +759,7 @@ namespace SIPSorcery.SIP
                             }
                             else if (!rawSIPMessage.Contains("SIP"))
                             {
-                               SIPBadRequestInTraceEvent?.Invoke(localEndPoint, remoteEndPoint, "Missing SIP string.", SIPValidationFieldsEnum.NoSIPString, rawSIPMessage);
+                                SIPBadRequestInTraceEvent?.Invoke(localEndPoint, remoteEndPoint, "Missing SIP string.", SIPValidationFieldsEnum.NoSIPString, rawSIPMessage);
                                 return Task.FromResult(SocketError.InvalidArgument);
                             }
 
@@ -844,6 +844,11 @@ namespace SIPSorcery.SIP
                                                 sipRequest.Header.Vias.UpateTopViaHeader(remoteEndPoint.GetIPEndPoint());
                                                 requestTransaction.PRACKReceived(localEndPoint, remoteEndPoint, sipRequest);
                                             }
+                                            else if (sipRequest.Method == SIPMethodsEnum.INVITE && (requestTransaction.TransactionState == SIPTransactionStatesEnum.Trying ||
+                                                requestTransaction.TransactionState == SIPTransactionStatesEnum.Proceeding))
+                                            {
+                                                return SendResponseAsync(requestTransaction.UnreliableProvisionalResponse);
+                                            }
                                             else
                                             {
                                                 logger.LogWarning("Transaction already exists, ignoring duplicate request, " + sipRequest.Method + " " + sipRequest.URI.ToString() + ".");
@@ -855,7 +860,10 @@ namespace SIPSorcery.SIP
                                             UASInviteTransaction inviteTransaction = (UASInviteTransaction)GetTransaction(SIPTransaction.GetRequestTransactionId(sipRequest.Header.Vias.TopViaHeader.Branch, SIPMethodsEnum.INVITE));
                                             if (inviteTransaction != null)
                                             {
+                                                // Note: this will generate the INVITE request response.
                                                 inviteTransaction.CancelCall();
+
+                                                // Note: this will generate the CANCEL request response.
                                                 SIPResponse okResponse = SIPResponse.GetResponse(sipRequest, SIPResponseStatusCodesEnum.Ok, null);
                                                 okResponse.Header.To.ToTag = inviteTransaction.LocalTag;
                                                 return SendResponseAsync(okResponse);
@@ -1087,8 +1095,8 @@ namespace SIPSorcery.SIP
                     sipChannel = new SIPTCPChannel(new IPEndPoint(localAddress, 0));
                     break;
                 //case SIPProtocolsEnum.tls:
-                    // TODO: Workout how to generate a random certificate.
-                    //sipChannel = new SIPTLSChannel(randomCertificate, new IPEndPoint(localAddress, 0));
+                // TODO: Workout how to generate a random certificate.
+                //sipChannel = new SIPTLSChannel(randomCertificate, new IPEndPoint(localAddress, 0));
                 //    break;
                 case SIPProtocolsEnum.udp:
                     sipChannel = new SIPUDPChannel(new IPEndPoint(localAddress, 0));

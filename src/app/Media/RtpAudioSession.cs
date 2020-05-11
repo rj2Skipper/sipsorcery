@@ -4,11 +4,15 @@
 // Description: A lightweight audio only RTP session suitable for testing.
 // No rendering or capturing capabilities.
 //
+// Note: The signal generation and audio codec classes have been copied
+// verbatim from the NAudio project, see https://github.com/naudio/NAudio.
+//
 // Author(s):
 // Aaron Clauson (aaron@sipsorcery.com)
 //
 // History:
 // 19 Mar 2020	Aaron Clauson	Created, Dublin, Ireland.
+// 21 Apr 2020  Aaron Clauson   Added alaw and mulaw decode classes.
 //
 // License: 
 // BSD 3-Clause "New" or "Revised" License, see included LICENSE.md file.
@@ -18,8 +22,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net.Sockets;
-using System.Numerics;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -51,18 +54,20 @@ namespace SIPSorcery.Media
         public Dictionary<SDPMediaFormatsEnum, string> SourceFiles;
     }
 
+    /// <summary>
+    /// An audio only RTP session that can supply an audio stream to the caller. Any incoming audio stream is 
+    /// ignored and this class does NOT use any audio devices on the system for capture or playback.
+    /// </summary>
     public class RtpAudioSession : RTPSession, IMediaSession
     {
-        private const int DTMF_EVENT_DURATION = 1200;        // Default duration for a DTMF event.
-        private const int DTMF_EVENT_PAYLOAD_ID = 101;
-        private const int SAMPLE_RATE = 8000;                 // G711 and G722 (mistakenly) use an 8KHz clock.
+        private const int SAMPLE_RATE = 8000;                 // G711 and G722 use an 8KHz for RTP timestamps clock.
         private const int AUDIO_SAMPLE_PERIOD_MILLISECONDS = 20;
         private static readonly byte PCMU_SILENCE_BYTE_ZERO = 0x7F;
         private static readonly byte PCMU_SILENCE_BYTE_ONE = 0xFF;
         private static readonly byte PCMA_SILENCE_BYTE_ZERO = 0x55;
         private static readonly byte PCMA_SILENCE_BYTE_ONE = 0xD5;
 
-        private static Microsoft.Extensions.Logging.ILogger Log = SIPSorcery.Sys.Log.Logger;
+        private static ILogger Log = SIPSorcery.Sys.Log.Logger;
 
         private StreamReader _audioStreamReader;
         private SignalGenerator _signalGenerator;
@@ -75,12 +80,28 @@ namespace SIPSorcery.Media
         private G722Codec _g722Codec;
         private G722CodecState _g722CodecState;
 
-        public event Action<byte[], uint, uint, int> OnVideoSampleReady;
-        public event Action<Complex[]> OnAudioScopeSampleReady;
-        public event Action<Complex[]> OnHoldAudioScopeSampleReady;
+        public uint RtpPacketsSent
+        {
+            get { return base.AudioRtcpSession.PacketsSentCount; }
+        }
 
-        public RtpAudioSession(DummyAudioOptions audioOptions, List<SDPMediaFormatsEnum> audioCodecs) :
-            base(false, false, false)
+        public uint RtpPacketsReceived
+        {
+            get { return base.AudioRtcpSession.PacketsReceivedCount; }
+        }
+
+        /// <summary>
+        /// Creates an audio only RTP session that can supply an audio stream to the caller.
+        /// </summary>
+        /// <param name="audioOptions">The options that determine the type of audio to stream to the remote party. Example
+        /// type of audio sources are music, silence, white noise etc.</param>
+        /// <param name="audioCodecs">The audio codecs to support.</param>
+        /// <param name="bindAddress">Optional. If specified this address will be used as the bind address for any RTP
+        /// and control sockets created. Generally this address does not need to be set. The default behaviour
+        /// is to bind to [::] or 0.0.0.0,d depending on system support, which minimises network routing
+        /// causing connection issues.</param>
+        public RtpAudioSession(DummyAudioOptions audioOptions, List<SDPMediaFormatsEnum> audioCodecs, IPAddress bindAddress = null) :
+            base(false, false, false, bindAddress)
         {
             if (audioCodecs == null || audioCodecs.Count() == 0)
             {
@@ -96,7 +117,7 @@ namespace SIPSorcery.Media
 
             // RTP event support.
             SDPMediaFormat rtpEventFormat = new SDPMediaFormat(DTMF_EVENT_PAYLOAD_ID);
-            rtpEventFormat.SetFormatAttribute($"{RTPSession.TELEPHONE_EVENT_ATTRIBUTE}/{SAMPLE_RATE}");
+            rtpEventFormat.SetFormatAttribute($"{SDP.TELEPHONE_EVENT_ATTRIBUTE}/{SAMPLE_RATE}");
             rtpEventFormat.SetFormatParameterAttribute("0-16");
 
             var audioCapabilities = new List<SDPMediaFormat> { rtpEventFormat };
@@ -105,33 +126,22 @@ namespace SIPSorcery.Media
                 audioCapabilities.Add(new SDPMediaFormat(codec));
             }
 
-            MediaStreamTrack audioTrack = new MediaStreamTrack(null, SDPMediaTypesEnum.audio, false, audioCapabilities);
+            MediaStreamTrack audioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, audioCapabilities);
             base.addTrack(audioTrack);
         }
 
-        public void Close(string reason)
+        public override void Close(string reason)
         {
-            base.CloseSession(reason);
+            base.Close(reason);
 
             _audioStreamTimer?.Dispose();
             _audioStreamReader?.Close();
         }
 
-        public Task SendDtmf(byte key, CancellationToken ct)
-        {
-            var dtmfEvent = new RTPEvent(key, false, RTPEvent.DEFAULT_VOLUME, DTMF_EVENT_DURATION, DTMF_EVENT_PAYLOAD_ID);
-            return SendDtmfEvent(dtmfEvent, ct);
-        }
-
-        public void SendMedia(SDPMediaTypesEnum mediaType, uint samplePeriod, byte[] sample)
-        {
-            throw new NotImplementedException("SendMedia is not implemented for RtpAudioSession.");
-        }
-
         /// <summary>
         /// Initialises the audio source as required.
         /// </summary>
-        public Task Start()
+        public override Task Start()
         {
             lock (this)
             {
@@ -139,19 +149,20 @@ namespace SIPSorcery.Media
                 {
                     _isStarted = true;
 
-                    if (AudioLocalTrack == null || AudioLocalTrack.Capabilties == null || AudioLocalTrack.Capabilties.Count == 0)
+                    if (AudioLocalTrack == null || AudioLocalTrack.Capabilities == null || AudioLocalTrack.Capabilities.Count == 0)
                     {
                         throw new ApplicationException("Cannot start audio session without a local audio track being available.");
                     }
-                    else if (AudioRemoteTrack == null || AudioRemoteTrack.Capabilties == null || AudioRemoteTrack.Capabilties.Count == 0)
+                    else if (AudioRemoteTrack == null || AudioRemoteTrack.Capabilities == null || AudioRemoteTrack.Capabilities.Count == 0)
                     {
                         throw new ApplicationException("Cannot start audio session without a remote audio track being available.");
                     }
 
                     // Choose which codec to use.
-                    _sendingFormat = AudioLocalTrack.Capabilties
-                        .Where(x => x.FormatID != DTMF_EVENT_PAYLOAD_ID.ToString() && int.TryParse(x.FormatID, out _))
-                        .OrderBy(x => int.Parse(x.FormatID)).First();
+                    //_sendingFormat = AudioLocalTrack.Capabilities
+                    //    .Where(x => x.FormatID != DTMF_EVENT_PAYLOAD_ID.ToString() && int.TryParse(x.FormatID, out _))
+                    //    .OrderBy(x => int.Parse(x.FormatID)).First();
+                    _sendingFormat = base.GetSendingFormat(SDPMediaTypesEnum.audio);
 
                     Log.LogDebug($"RTP audio session selected sending codec {_sendingFormat.FormatCodec}.");
 
@@ -214,7 +225,7 @@ namespace SIPSorcery.Media
                     }
                 }
 
-                return Task.CompletedTask;
+                return base.Start();
             }
         }
 
@@ -251,20 +262,19 @@ namespace SIPSorcery.Media
             {
                 uint bufferSize = SAMPLE_RATE / 1000 * AUDIO_SAMPLE_PERIOD_MILLISECONDS;
 
-                byte[] sample = new byte[bufferSize / 2];
-                int sampleIndex = 0;
+                byte[] sample = new byte[bufferSize];
 
                 for (int index = 0; index < bufferSize; index += 2)
                 {
                     if (_sendingFormat.FormatCodec == SDPMediaFormatsEnum.PCMA)
                     {
-                        sample[sampleIndex] = PCMA_SILENCE_BYTE_ZERO;
-                        sample[sampleIndex + 1] = PCMA_SILENCE_BYTE_ONE;
+                        sample[index] = PCMA_SILENCE_BYTE_ZERO;
+                        sample[index + 1] = PCMA_SILENCE_BYTE_ONE;
                     }
                     else if (_sendingFormat.FormatCodec == SDPMediaFormatsEnum.PCMU)
                     {
-                        sample[sampleIndex] = PCMU_SILENCE_BYTE_ZERO;
-                        sample[sampleIndex + 1] = PCMU_SILENCE_BYTE_ONE;
+                        sample[index] = PCMU_SILENCE_BYTE_ZERO;
+                        sample[index + 1] = PCMU_SILENCE_BYTE_ONE;
                     }
                     else
                     {
@@ -426,6 +436,120 @@ namespace SIPSorcery.Media
             }
             compressedByte ^= (byte)(sign ^ 0x55);
             return compressedByte;
+        }
+    }
+
+    /// <summary>
+    /// a-law decoder
+    /// based on code from:
+    /// http://hazelware.luggle.com/tutorials/mulawcompression.html
+    /// </summary>
+    public class ALawDecoder
+    {
+        /// <summary>
+        /// only 512 bytes required, so just use a lookup
+        /// </summary>
+        private static readonly short[] ALawDecompressTable = new short[256]
+        {
+             -5504, -5248, -6016, -5760, -4480, -4224, -4992, -4736,
+             -7552, -7296, -8064, -7808, -6528, -6272, -7040, -6784,
+             -2752, -2624, -3008, -2880, -2240, -2112, -2496, -2368,
+             -3776, -3648, -4032, -3904, -3264, -3136, -3520, -3392,
+             -22016,-20992,-24064,-23040,-17920,-16896,-19968,-18944,
+             -30208,-29184,-32256,-31232,-26112,-25088,-28160,-27136,
+             -11008,-10496,-12032,-11520,-8960, -8448, -9984, -9472,
+             -15104,-14592,-16128,-15616,-13056,-12544,-14080,-13568,
+             -344,  -328,  -376,  -360,  -280,  -264,  -312,  -296,
+             -472,  -456,  -504,  -488,  -408,  -392,  -440,  -424,
+             -88,   -72,   -120,  -104,  -24,   -8,    -56,   -40,
+             -216,  -200,  -248,  -232,  -152,  -136,  -184,  -168,
+             -1376, -1312, -1504, -1440, -1120, -1056, -1248, -1184,
+             -1888, -1824, -2016, -1952, -1632, -1568, -1760, -1696,
+             -688,  -656,  -752,  -720,  -560,  -528,  -624,  -592,
+             -944,  -912,  -1008, -976,  -816,  -784,  -880,  -848,
+              5504,  5248,  6016,  5760,  4480,  4224,  4992,  4736,
+              7552,  7296,  8064,  7808,  6528,  6272,  7040,  6784,
+              2752,  2624,  3008,  2880,  2240,  2112,  2496,  2368,
+              3776,  3648,  4032,  3904,  3264,  3136,  3520,  3392,
+              22016, 20992, 24064, 23040, 17920, 16896, 19968, 18944,
+              30208, 29184, 32256, 31232, 26112, 25088, 28160, 27136,
+              11008, 10496, 12032, 11520, 8960,  8448,  9984,  9472,
+              15104, 14592, 16128, 15616, 13056, 12544, 14080, 13568,
+              344,   328,   376,   360,   280,   264,   312,   296,
+              472,   456,   504,   488,   408,   392,   440,   424,
+              88,    72,   120,   104,    24,     8,    56,    40,
+              216,   200,   248,   232,   152,   136,   184,   168,
+              1376,  1312,  1504,  1440,  1120,  1056,  1248,  1184,
+              1888,  1824,  2016,  1952,  1632,  1568,  1760,  1696,
+              688,   656,   752,   720,   560,   528,   624,   592,
+              944,   912,  1008,   976,   816,   784,   880,   848
+        };
+
+        /// <summary>
+        /// Converts an a-law encoded byte to a 16 bit linear sample
+        /// </summary>
+        /// <param name="aLaw">a-law encoded byte</param>
+        /// <returns>Linear sample</returns>
+        public static short ALawToLinearSample(byte aLaw)
+        {
+            return ALawDecompressTable[aLaw];
+        }
+    }
+
+    /// <summary>
+    /// mu-law decoder
+    /// based on code from:
+    /// http://hazelware.luggle.com/tutorials/mulawcompression.html
+    /// </summary>
+    public static class MuLawDecoder
+    {
+        /// <summary>
+        /// only 512 bytes required, so just use a lookup
+        /// </summary>
+        private static readonly short[] MuLawDecompressTable = new short[256]
+        {
+             -32124,-31100,-30076,-29052,-28028,-27004,-25980,-24956,
+             -23932,-22908,-21884,-20860,-19836,-18812,-17788,-16764,
+             -15996,-15484,-14972,-14460,-13948,-13436,-12924,-12412,
+             -11900,-11388,-10876,-10364, -9852, -9340, -8828, -8316,
+              -7932, -7676, -7420, -7164, -6908, -6652, -6396, -6140,
+              -5884, -5628, -5372, -5116, -4860, -4604, -4348, -4092,
+              -3900, -3772, -3644, -3516, -3388, -3260, -3132, -3004,
+              -2876, -2748, -2620, -2492, -2364, -2236, -2108, -1980,
+              -1884, -1820, -1756, -1692, -1628, -1564, -1500, -1436,
+              -1372, -1308, -1244, -1180, -1116, -1052,  -988,  -924,
+               -876,  -844,  -812,  -780,  -748,  -716,  -684,  -652,
+               -620,  -588,  -556,  -524,  -492,  -460,  -428,  -396,
+               -372,  -356,  -340,  -324,  -308,  -292,  -276,  -260,
+               -244,  -228,  -212,  -196,  -180,  -164,  -148,  -132,
+               -120,  -112,  -104,   -96,   -88,   -80,   -72,   -64,
+                -56,   -48,   -40,   -32,   -24,   -16,    -8,     -1,
+              32124, 31100, 30076, 29052, 28028, 27004, 25980, 24956,
+              23932, 22908, 21884, 20860, 19836, 18812, 17788, 16764,
+              15996, 15484, 14972, 14460, 13948, 13436, 12924, 12412,
+              11900, 11388, 10876, 10364,  9852,  9340,  8828,  8316,
+               7932,  7676,  7420,  7164,  6908,  6652,  6396,  6140,
+               5884,  5628,  5372,  5116,  4860,  4604,  4348,  4092,
+               3900,  3772,  3644,  3516,  3388,  3260,  3132,  3004,
+               2876,  2748,  2620,  2492,  2364,  2236,  2108,  1980,
+               1884,  1820,  1756,  1692,  1628,  1564,  1500,  1436,
+               1372,  1308,  1244,  1180,  1116,  1052,   988,   924,
+                876,   844,   812,   780,   748,   716,   684,   652,
+                620,   588,   556,   524,   492,   460,   428,   396,
+                372,   356,   340,   324,   308,   292,   276,   260,
+                244,   228,   212,   196,   180,   164,   148,   132,
+                120,   112,   104,    96,    88,    80,    72,    64,
+                 56,    48,    40,    32,    24,    16,     8,     0
+        };
+
+        /// <summary>
+        /// Converts a mu-law encoded byte to a 16 bit linear sample
+        /// </summary>
+        /// <param name="muLaw">mu-law encoded byte</param>
+        /// <returns>Linear sample</returns>
+        public static short MuLawToLinearSample(byte muLaw)
+        {
+            return MuLawDecompressTable[muLaw];
         }
     }
 
@@ -714,5 +838,4 @@ namespace SIPSorcery.Media
         /// </summary>
         SawTooth,
     }
-
 }

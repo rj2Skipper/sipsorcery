@@ -70,6 +70,24 @@ namespace SIPSorcery.Net
                     return 0;
             }
         }
+
+        /// <summary>
+        /// Attempts to get the RTP clock rate of known payload types. Generally this will be the same
+        /// as the clock rate but in some cases for seemingly historical reasons they are different
+        /// </summary>
+        /// <param name="mediaType">The media type to get the clock rate for.</param>
+        /// <returns>An integer representing the payload type's RTP timestamp frequency or 0
+        /// if it's not known.</returns>
+        public static int GetRtpClockRate(SDPMediaFormatsEnum payloadType)
+        {
+            switch (payloadType)
+            {
+                case SDPMediaFormatsEnum.G722:
+                    return 8000;
+                default:
+                    return GetClockRate(payloadType);
+            }
+        }
     }
 
     /// <summary>
@@ -104,7 +122,7 @@ namespace SIPSorcery.Net
         /// The codec in use for this media format.
         /// </summary>
         public SDPMediaFormatsEnum FormatCodec;
-        
+
         /// <summary>
         /// The optional format attribute for the media format. For standard media types this is not necessary.
         /// <code>
@@ -143,7 +161,7 @@ namespace SIPSorcery.Net
         /// types and will have a default value of 0.
         /// </summary>
         public int ClockRate { get; set; } = 0;
-        
+
         /// <summary>
         /// For well known media types this will contain the default clock rate. Warning, if the format is not known or
         /// is dynamic this can be 0.
@@ -163,7 +181,7 @@ namespace SIPSorcery.Net
                 FormatCodec = (SDPMediaFormatsEnum)Enum.Parse(typeof(SDPMediaFormatsEnum), formatID.ToString(), true);
                 Name = FormatCodec.ToString();
                 ClockRate = SDPMediaFormatInfo.GetClockRate(FormatCodec);
-                IsStandardAttribute = (formatID < DYNAMIC_ATTRIBUTES_START);
+                //IsStandardAttribute = (formatID < DYNAMIC_ATTRIBUTES_START);
             }
             FormatAttribute = (ClockRate == 0) ? Name : Name + "/" + ClockRate;
         }
@@ -223,7 +241,7 @@ namespace SIPSorcery.Net
         /// standard media format.</returns>
         public int GetClockRate()
         {
-            if(ClockRate != 0)
+            if (ClockRate != 0)
             {
                 return ClockRate;
             }
@@ -243,7 +261,7 @@ namespace SIPSorcery.Net
         {
             foreach (SDPMediaFormatsEnum format in Enum.GetValues(typeof(SDPMediaFormatsEnum)))
             {
-                if(name.ToLower() == format.ToString().ToLower())
+                if (name.ToLower() == format.ToString().ToLower())
                 {
                     return format;
                 }
@@ -258,7 +276,8 @@ namespace SIPSorcery.Net
         }
 
         /// <summary>
-        /// Attempts to get the compatible formats between two lists.
+        /// Attempts to get the compatible formats between two lists. Formats for
+        /// "RTP Events" are not included.
         /// </summary>
         /// <param name="a">The first list to match the media formats for.</param>
         /// <param name="b">The second list to match the media formats for.</param>
@@ -279,7 +298,8 @@ namespace SIPSorcery.Net
             foreach (var format in a)
             {
                 // TODO: Need to compare all aspects of the format not just the codec.
-                if (b.Any(x => x.FormatCodec == format.FormatCodec))
+                if (format.FormatAttribute?.StartsWith(SDP.TELEPHONE_EVENT_ATTRIBUTE) != true
+                    && b.Any(x => x.FormatCodec == format.FormatCodec))
                 {
                     compatible.Add(format);
                 }

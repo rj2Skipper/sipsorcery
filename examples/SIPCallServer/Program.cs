@@ -109,7 +109,7 @@ namespace SIPSorcery
             _sipTransport.AddSIPChannel(new SIPUDPChannel(new IPEndPoint(IPAddress.Any, SIP_LISTEN_PORT)));
             // If it's desired to listen on a single IP address use the equivalent of:
             //_sipTransport.AddSIPChannel(new SIPUDPChannel(new IPEndPoint(IPAddress.Parse("192.168.11.50"), SIP_LISTEN_PORT)));
-            EnableTraceLogs(_sipTransport);
+            EnableTraceLogs(_sipTransport, false);
 
             _sipTransport.SIPTransportRequestReceived += OnRequest;
 
@@ -148,7 +148,7 @@ namespace SIPSorcery
                         var ua = new SIPUserAgent(_sipTransport, null);
                         ua.ClientCallTrying += (uac, resp) => Log.LogInformation($"{uac.CallDescriptor.To} Trying: {resp.StatusCode} {resp.ReasonPhrase}.");
                         ua.ClientCallRinging += (uac, resp) => Log.LogInformation($"{uac.CallDescriptor.To} Ringing: {resp.StatusCode} {resp.ReasonPhrase}.");
-                        ua.ClientCallFailed += (uac, err) => Log.LogWarning($"{uac.CallDescriptor.To} Failed: {err}");
+                        ua.ClientCallFailed += (uac, err, resp) => Log.LogWarning($"{uac.CallDescriptor.To} Failed: {err}, Status code: {resp?.StatusCode}");
                         ua.ClientCallAnswered += (uac, resp) => Log.LogInformation($"{uac.CallDescriptor.To} Answered: {resp.StatusCode} {resp.ReasonPhrase}.");
                         ua.OnDtmfTone += (key, duration) => OnDtmfTone(ua, key, duration);
                         ua.OnRtpEvent += (evt, hdr) => Log.LogDebug($"rtp event {evt.EventID}, duration {evt.Duration}, end of event {evt.EndOfEvent}, timestamp {hdr.Timestamp}, marker {hdr.MarkerBit}.");
@@ -203,6 +203,7 @@ namespace SIPSorcery
                             foreach (var call in _calls)
                             {
                                 Log.LogInformation($"Hanging up call {call.Key}.");
+                                call.Value.OnCallHungup -= OnHangup;
                                 call.Value.Hangup();
                             }
                             _calls.Clear();
@@ -219,7 +220,10 @@ namespace SIPSorcery
                             Log.LogInformation("Current call list:");
                             foreach (var call in _calls)
                             {
-                                Log.LogInformation($"{call.Key}: {call.Value.Dialogue.RemoteTarget}");
+                                int duration = Convert.ToInt32(DateTimeOffset.Now.Subtract(call.Value.Dialogue.Inserted).TotalSeconds);
+                                uint rtpSent = (call.Value.MediaSession as RtpAudioSession).RtpPacketsSent;
+                                uint rtpRecv = (call.Value.MediaSession as RtpAudioSession).RtpPacketsReceived;
+                                Log.LogInformation($"{call.Key}: {call.Value.Dialogue.RemoteTarget} {duration}s {rtpSent}/{rtpRecv}");
                             }
                         }
                     }
@@ -284,14 +288,16 @@ namespace SIPSorcery
         /// <summary>
         /// Example of how to create a basic RTP session object and hook up the event handlers.
         /// </summary>
-        /// <param name="ua">The suer agent the RTP session is being created for.</param>
+        /// <param name="ua">The user agent the RTP session is being created for.</param>
+        /// <param name="dst">THe destination specified on an incoming call. Can be used to
+        /// set the audio source.</param>
         /// <returns>A new RTP session object.</returns>
         private static RtpAudioSession CreateRtpSession(SIPUserAgent ua, string dst)
         {
             List<SDPMediaFormatsEnum> codecs = new List<SDPMediaFormatsEnum> { SDPMediaFormatsEnum.PCMU, SDPMediaFormatsEnum.PCMA, SDPMediaFormatsEnum.G722 };
 
             var audioSource = DummyAudioSourcesEnum.SineWave;
-            if (!Enum.TryParse<DummyAudioSourcesEnum>(dst, out audioSource))
+            if (string.IsNullOrEmpty(dst) || !Enum.TryParse<DummyAudioSourcesEnum>(dst, out audioSource))
             {
                 audioSource = DummyAudioSourcesEnum.Silence;
             }
@@ -311,6 +317,19 @@ namespace SIPSorcery
 
             // Wire up the event handler for RTP packets received from the remote party.
             rtpAudioSession.OnRtpPacketReceived += (type, rtp) => OnRtpPacketReceived(ua, type, rtp);
+            rtpAudioSession.OnTimeout += (mediaType) =>
+            {
+                if (ua?.Dialogue != null)
+                {
+                    Log.LogWarning($"RTP timeout on call with {ua.Dialogue.RemoteTarget}, hanging up.");
+                }
+                else
+                {
+                    Log.LogWarning($"RTP timeout on incomplete call, closing RTP session.");
+                }
+
+                ua.Hangup();
+            };
 
             return rtpAudioSession;
         }
@@ -361,9 +380,20 @@ namespace SIPSorcery
                     ua.ServerCallCancelled += (uas) => Log.LogDebug("Incoming call cancelled by remote party.");
                     ua.OnDtmfTone += (key, duration) => OnDtmfTone(ua, key, duration);
                     ua.OnRtpEvent += (evt, hdr) => Log.LogDebug($"rtp event {evt.EventID}, duration {evt.Duration}, end of event {evt.EndOfEvent}, timestamp {hdr.Timestamp}, marker {hdr.MarkerBit}.");
+                    ua.OnTransactionTraceMessage += (tx, msg) => Log.LogDebug($"uas tx {tx.TransactionId}: {msg}");
+                    ua.ServerCallRingTimeout += (uas) =>
+                    {
+                        Log.LogWarning($"Incoming call timed out in {uas.ClientTransaction.TransactionState} state waiting for client ACK, terminating.");
+                        ua.Hangup();
+                    };
 
                     var uas = ua.AcceptCall(sipRequest);
                     var rtpSession = CreateRtpSession(ua, sipRequest.URI.User);
+
+                    // Insert a brief delay to allow testing of the "Ringing" progress response.
+                    // Without the delay the call gets answered before it can be sent.
+                    await Task.Delay(500);
+
                     await ua.Answer(uas, rtpSession);
 
                     if (ua.IsCallActive)
@@ -400,11 +430,9 @@ namespace SIPSorcery
         /// <param name="dialogue">The dialogue that was hungup.</param>
         private static void OnHangup(SIPDialogue dialogue)
         {
-            // If the dialogue is null it means the hangup was initiated from our end.
             if (dialogue != null)
             {
                 string callID = dialogue.CallId;
-                Log.LogInformation($"Call hungup by remote party {callID}.");
                 if (_calls.ContainsKey(callID))
                 {
                     _calls.TryRemove(callID, out _);
@@ -454,30 +482,62 @@ namespace SIPSorcery
         /// <summary>
         /// Enable detailed SIP log messages.
         /// </summary>
-        private static void EnableTraceLogs(SIPTransport sipTransport)
+        private static void EnableTraceLogs(SIPTransport sipTransport, bool fullSIP)
         {
             sipTransport.SIPRequestInTraceEvent += (localEP, remoteEP, req) =>
             {
                 Log.LogDebug($"Request received: {localEP}<-{remoteEP}");
-                Log.LogDebug(req.ToString());
+
+                if (!fullSIP)
+                {
+                    Log.LogDebug(req.StatusLine);
+                }
+                else
+                {
+                    Log.LogDebug(req.ToString());
+                }
             };
 
             sipTransport.SIPRequestOutTraceEvent += (localEP, remoteEP, req) =>
             {
                 Log.LogDebug($"Request sent: {localEP}->{remoteEP}");
-                Log.LogDebug(req.ToString());
+
+                if (!fullSIP)
+                {
+                    Log.LogDebug(req.StatusLine);
+                }
+                else
+                {
+                    Log.LogDebug(req.ToString());
+                }
             };
 
             sipTransport.SIPResponseInTraceEvent += (localEP, remoteEP, resp) =>
             {
                 Log.LogDebug($"Response received: {localEP}<-{remoteEP}");
-                Log.LogDebug(resp.ToString());
+
+                if (!fullSIP)
+                {
+                    Log.LogDebug(resp.ShortDescription);
+                }
+                else
+                {
+                    Log.LogDebug(resp.ToString());
+                }
             };
 
             sipTransport.SIPResponseOutTraceEvent += (localEP, remoteEP, resp) =>
             {
                 Log.LogDebug($"Response sent: {localEP}->{remoteEP}");
-                Log.LogDebug(resp.ToString());
+
+                if (!fullSIP)
+                {
+                    Log.LogDebug(resp.ShortDescription);
+                }
+                else
+                {
+                    Log.LogDebug(resp.ToString());
+                }
             };
 
             sipTransport.SIPRequestRetransmitTraceEvent += (tx, req, count) =>

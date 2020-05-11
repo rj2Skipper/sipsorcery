@@ -142,6 +142,7 @@ namespace SIPSorcery.SIP
             try
             {
                 DeliveryPending = false;
+                base.UpdateTransactionState(SIPTransactionStatesEnum.Confirmed);
 
                 // BranchId for 2xx responses needs to be a new one, non-2xx final responses use same one as original request.
                 if (sipResponse.StatusCode >= 200 && sipResponse.StatusCode < 299)
@@ -222,7 +223,7 @@ namespace SIPSorcery.SIP
                     ackRequest.Header.ContentType = contentType;
                 }
 
-               return ackRequest;
+                return ackRequest;
             }
             catch (Exception excp)
             {
@@ -356,7 +357,7 @@ namespace SIPSorcery.SIP
             prackRequest.Header.RAckCSeq = progressResponse.Header.CSeq;
             prackRequest.Header.RAckCSeqMethod = progressResponse.Header.CSeqMethod;
 
-           return prackRequest;
+            return prackRequest;
         }
     }
 }

@@ -28,7 +28,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net;
 using System.Threading;
 using Microsoft.Extensions.Logging;
@@ -90,7 +89,7 @@ namespace SIPSorcery.Net
         /// <summary>
         /// Timestamp that the last RTP or RTCP packet for was received at.
         /// </summary>
-        public DateTime LastActivityAt { get; private set; }
+        public DateTime LastActivityAt { get; private set; } = DateTime.MinValue;
 
         /// <summary>
         /// Indicates whether the session is currently in a timed out state. This
@@ -146,11 +145,16 @@ namespace SIPSorcery.Net
         public ReceptionReport ReceptionReport { get; private set; }
 
         /// <summary>
+        /// Indicates whether the RTCP session has been closed.
+        /// An RTCP BYE request will typically trigger an close.
+        /// </summary>
+        public bool IsClosed { get; private set; } = false;
+
+        /// <summary>
         /// Time to schedule the delivery of RTCP reports.
         /// </summary>
         private Timer m_rtcpReportTimer;
 
-        private bool m_isClosed = false;
         private ReceptionReport m_receptionReport;
         private uint m_previousPacketsSentCount = 0;    // Used to track whether we have sent any packets since the last report was sent.
 
@@ -189,9 +193,9 @@ namespace SIPSorcery.Net
 
         public void Close(string reason)
         {
-            if (!m_isClosed)
+            if (!IsClosed)
             {
-                m_isClosed = true;
+                IsClosed = true;
                 m_rtcpReportTimer?.Dispose();
 
                 var byeReport = GetRtcpReport();
@@ -217,6 +221,21 @@ namespace SIPSorcery.Net
             }
 
             m_receptionReport.RtpPacketReceived(rtpPacket.Header.SequenceNumber, rtpPacket.Header.Timestamp, DateTimeToNtpTimestamp32(DateTime.Now));
+        }
+
+        /// <summary>
+        /// Removes the reception report when the remote party indicates no more RTP packets
+        /// for that SSRC will be received by sending an RTCP BYE.
+        /// </summary>
+        /// <param name="ssrc">The SSRC of the reception report being closed. Typically this
+        /// should be the SSRC received in the RTCP BYE.</param>
+        internal void RemoveReceptionReport(uint ssrc)
+        {
+            if (m_receptionReport != null && m_receptionReport.SSRC == ssrc)
+            {
+                logger.LogDebug($"RTCP session removing reception report for remote ssrc {ssrc}.");
+                m_receptionReport = null;
+            }
         }
 
         /// <summary>
@@ -284,36 +303,39 @@ namespace SIPSorcery.Net
         {
             try
             {
-                if (!m_isClosed)
+                if (!IsClosed)
                 {
-                    if ((LastActivityAt != DateTime.MinValue && DateTime.Now.Subtract(LastActivityAt).TotalMilliseconds > NO_ACTIVITY_TIMEOUT_MILLISECONDS) ||
-                        (LastActivityAt == DateTime.MinValue && DateTime.Now.Subtract(CreatedAt).TotalMilliseconds > NO_ACTIVITY_TIMEOUT_MILLISECONDS))
+                    lock (m_rtcpReportTimer)
                     {
-                        if (!IsTimedOut)
+                        if ((LastActivityAt != DateTime.MinValue && DateTime.Now.Subtract(LastActivityAt).TotalMilliseconds > NO_ACTIVITY_TIMEOUT_MILLISECONDS) ||
+                            (LastActivityAt == DateTime.MinValue && DateTime.Now.Subtract(CreatedAt).TotalMilliseconds > NO_ACTIVITY_TIMEOUT_MILLISECONDS))
                         {
-                            logger.LogWarning($"RTCP session for ssrc {Ssrc} has not had any activity for over {NO_ACTIVITY_TIMEOUT_MILLISECONDS / 1000} seconds.");
-                            IsTimedOut = true;
+                            if (!IsTimedOut)
+                            {
+                                logger.LogWarning($"RTCP session for local ssrc {Ssrc} has not had any activity for over {NO_ACTIVITY_TIMEOUT_MILLISECONDS / 1000} seconds.");
+                                IsTimedOut = true;
 
-                            OnTimeout?.Invoke(MediaType);
+                                OnTimeout?.Invoke(MediaType);
+                            }
                         }
-                    }
 
-                    //logger.LogDebug($"SendRtcpSenderReport ssrc {Ssrc}, last seqnum {LastSeqNum}, pkts {PacketsSentCount}, bytes {OctetsSentCount} ");
+                        //logger.LogDebug($"SendRtcpSenderReport ssrc {Ssrc}, last seqnum {LastSeqNum}, pkts {PacketsSentCount}, bytes {OctetsSentCount} ");
 
-                    var report = GetRtcpReport();
+                        var report = GetRtcpReport();
 
-                    OnReportReadyToSend?.Invoke(MediaType, report);
+                        OnReportReadyToSend?.Invoke(MediaType, report);
 
-                    m_previousPacketsSentCount = PacketsSentCount;
+                        m_previousPacketsSentCount = PacketsSentCount;
 
-                    var interval = GetNextRtcpInterval(RTCP_MINIMUM_REPORT_PERIOD_MILLISECONDS);
-                    if (m_rtcpReportTimer == null)
-                    {
-                        m_rtcpReportTimer = new Timer(SendReportTimerCallback, null, interval, Timeout.Infinite);
-                    }
-                    else
-                    {
-                        m_rtcpReportTimer?.Change(interval, Timeout.Infinite);
+                        var interval = GetNextRtcpInterval(RTCP_MINIMUM_REPORT_PERIOD_MILLISECONDS);
+                        if (m_rtcpReportTimer == null)
+                        {
+                            m_rtcpReportTimer = new Timer(SendReportTimerCallback, null, interval, Timeout.Infinite);
+                        }
+                        else
+                        {
+                            m_rtcpReportTimer?.Change(interval, Timeout.Infinite);
+                        }
                     }
                 }
             }
