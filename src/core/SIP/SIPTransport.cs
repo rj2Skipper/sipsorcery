@@ -599,16 +599,19 @@ namespace SIPSorcery.SIP
             IPEndPoint sendFromEndPoint = sendFromSIPEndPoint.GetIPEndPoint();
 
             // Top Via header.
-            if (header.Vias.TopViaHeader.ContactAddress.StartsWith(IPAddress.Any.ToString()) ||
-                header.Vias.TopViaHeader.ContactAddress.StartsWith(IPAddress.IPv6Any.ToString()))
+            if (header.Vias.Length > 0)
             {
-                header.Vias.Via[0].Host = sendFromEndPoint.Address.ToString();
-                header.Vias.Via[0].Port = sendFromEndPoint.Port;
-            }
+                if (header.Vias.TopViaHeader.ContactAddress.StartsWith(IPAddress.Any.ToString()) ||
+                    header.Vias.TopViaHeader.ContactAddress.StartsWith(IPAddress.IPv6Any.ToString()))
+                {
+                    header.Vias.Via[0].Host = sendFromEndPoint.Address.ToString();
+                    header.Vias.Via[0].Port = sendFromEndPoint.Port;
+                }
 
-            if (header.Vias.TopViaHeader.Transport != sendFromSIPEndPoint.Protocol)
-            {
-                header.Vias.Via[0].Transport = sendFromSIPEndPoint.Protocol;
+                if (header.Vias.TopViaHeader.Transport != sendFromSIPEndPoint.Protocol)
+                {
+                    header.Vias.Via[0].Transport = sendFromSIPEndPoint.Protocol;
+                }
             }
 
             // From header.
