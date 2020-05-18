@@ -57,12 +57,12 @@ namespace SIPSorcery.Net
         /// <summary>
         /// The type of the Session Description.
         /// </summary>
-        public RTCSdpType type;
+        public RTCSdpType type { get; set; }
 
         /// <summary>
         /// A string representation of the Session Description.
         /// </summary>
-        public string sdp;
+        public string sdp { get; set; }
     }
 
     /// <summary>
@@ -144,7 +144,7 @@ namespace SIPSorcery.Net
         private const string ICE_OPTIONS = "ice2,trickle";                   // Supported ICE options.
         private const string NORMAL_CLOSE_REASON = "normal";
 
-        private readonly string RTCP_ATTRIBUTE = $"a=rtcp:{SDP.DISABLED_RTP_PORT_NUMBER} IN IP4 0.0.0.0";
+        private readonly string RTCP_ATTRIBUTE = $"a=rtcp:{SDP.IGNORE_RTP_PORT_NUMBER} IN IP4 0.0.0.0";
 
         private static ILogger logger = Log.Logger;
 
@@ -223,8 +223,9 @@ namespace SIPSorcery.Net
         public event Action<RTCIceGatheringState> onicegatheringstatechange;
 
         /// <summary>
-        /// The state of the peer connection. A state of connected means the DTLS handshake has
-        /// completed and media packets can be exchanged.
+        /// The state of the peer connection. A state of connected means the ICE checks have 
+        /// succeeded and the DTLS handshake has completed. Once in the connected state it's
+        /// suitable for media packets can be exchanged.
         /// </summary>
         public event Action<RTCPeerConnectionState> onconnectionstatechange;
 
@@ -260,7 +261,17 @@ namespace SIPSorcery.Net
                     RemoteEndPoint = IceSession.NominatedCandidate.GetEndPoint();
                 }
 
-                oniceconnectionstatechange?.Invoke(state);
+                iceConnectionState = state;
+                oniceconnectionstatechange?.Invoke(iceConnectionState);
+
+                if (base.IsSecureContextReady &&
+                    iceConnectionState == RTCIceConnectionState.connected &&
+                    connectionState != RTCPeerConnectionState.connected)
+                {
+                    // This is the case where the ICE connection checks completed after the DTLS handshake.
+                    connectionState = RTCPeerConnectionState.connected;
+                    onconnectionstatechange?.Invoke(RTCPeerConnectionState.connected);
+                }
             };
             IceSession.OnIceGatheringStateChange += (state) => onicegatheringstatechange?.Invoke(state);
             IceSession.OnIceCandidateError += onicecandidateerror;
@@ -393,8 +404,13 @@ namespace SIPSorcery.Net
         {
             base.SetSecurityContext(protectRtp, unprotectRtp, protectRtcp, unprotectRtcp);
 
-            connectionState = RTCPeerConnectionState.connected;
-            onconnectionstatechange?.Invoke(RTCPeerConnectionState.connected);
+            if (iceConnectionState == RTCIceConnectionState.connected &&
+                connectionState != RTCPeerConnectionState.connected)
+            {
+                // This is the case where the DTLS handshake completed before the ICE connection checks.
+                connectionState = RTCPeerConnectionState.connected;
+                onconnectionstatechange?.Invoke(RTCPeerConnectionState.connected);
+            }
         }
 
         /// <summary>
@@ -571,7 +587,7 @@ namespace SIPSorcery.Net
 
                 SDPMediaAnnouncement announcement = new SDPMediaAnnouncement(
                  track.Kind,
-                 SDP.DISABLED_RTP_PORT_NUMBER,
+                 SDP.IGNORE_RTP_PORT_NUMBER,
                  (track.Kind == SDPMediaTypesEnum.video) ? videoCapabilities : audioCapabilities);
 
                 announcement.Transport = RTP_MEDIA_PROFILE;

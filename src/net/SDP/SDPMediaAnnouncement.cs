@@ -297,5 +297,27 @@ namespace SIPSorcery.Net
             this.ExtraMediaAttributes?.Clear();
             this.SecurityDescriptions?.Clear();
         }
+        
+        /// <summary>
+        /// Attempts to locate a media format corresponding to telephone events. If available its 
+        /// format ID is returned.
+        /// </summary>
+        /// <returns>If found the format ID for telephone events or -1 if not.</returns>
+        public int GetTelephoneEventFormatID()
+        {
+            foreach (var mediaFormat in MediaFormats)
+            {
+                if (mediaFormat.FormatAttribute?.StartsWith(SDP.TELEPHONE_EVENT_ATTRIBUTE) == true)
+                {
+                    if (int.TryParse(mediaFormat.FormatID, out var remoteRtpEventPayloadID))
+                    {
+                        return remoteRtpEventPayloadID;
+                    }
+                    break;
+                }
+            }
+
+            return -1;
+        }
     }
 }
