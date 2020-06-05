@@ -43,7 +43,9 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="WindowsAudioRtpSession.cs" />
+    <Compile Include="..\Common\Devices\WindowsAudioRtpSession.cs">
+      <Link>WindowsAudioRtpSession.cs</Link>
+    </Compile>
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
@@ -66,12 +68,9 @@
     <PackageReference Include="Serilog.Sinks.Console">
       <Version>3.1.1</Version>
     </PackageReference>
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\..\..\src\SIPSorcery.csproj">
-      <Project>{62ca60d6-f262-4aad-ba05-ed0c2e4c6cca}</Project>
-      <Name>SIPSorcery</Name>
-    </ProjectReference>
+    <PackageReference Include="SIPSorcery">
+      <Version>4.0.51-pre</Version>
+    </PackageReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
