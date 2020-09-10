@@ -169,3 +169,7 @@ bower_components
 *.dll
 *.vs
 
+docfx/*
+**/.vscode*
+*.sdp
+**/.ionide

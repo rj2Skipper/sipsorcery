@@ -24,6 +24,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -332,11 +333,20 @@ namespace SIPSorcery.SIP.App
                 throw new ApplicationException("The destination was not recognised as a valid SIP URI.");
             }
 
+            string fromHeader = SIPConstants.SIP_DEFAULT_FROMURI;
+
+            if (!string.IsNullOrWhiteSpace(username))
+            {
+                // If the call needs to be authenticated the From header needs to be set
+                // with the username and domain to match the credentials.
+                fromHeader = (new SIPURI(username, dstUri.Host, null, dstUri.Scheme, dstUri.Protocol)).ToParameterlessString();
+            }
+
             SIPCallDescriptor callDescriptor = new SIPCallDescriptor(
                username ?? SIPConstants.SIP_DEFAULT_USERNAME,
                password,
                dstUri.ToString(),
-               SIPConstants.SIP_DEFAULT_FROMURI,
+               fromHeader,
                dstUri.CanonicalAddress,
                null, null, null,
                SIPCallDirection.Out,
@@ -362,14 +372,8 @@ namespace SIPSorcery.SIP.App
 
             await InitiateCallAsync(callDescriptor, mediaSession).ConfigureAwait(false);
 
-            ClientCallAnswered += (uac, resp) =>
-            {
-                callResult.TrySetResult(true);
-            };
-            ClientCallFailed += (uac, errorMessage, result) =>
-            {
-                callResult.TrySetResult(false);
-            };
+            ClientCallAnswered += (uac, resp) => callResult.TrySetResult(true);
+            ClientCallFailed += (uac, errorMessage, result) => callResult.TrySetResult(false);
 
             return callResult.Task.Result;
         }
@@ -393,19 +397,12 @@ namespace SIPSorcery.SIP.App
             m_uac.CallFailed += ClientCallFailedHandler;
 
             // Can be DNS lookups involved in getting the call destination.
-            SIPEndPoint serverEndPoint = await Task.Run<SIPEndPoint>(() => { return m_uac.GetCallDestination(sipCallDescriptor); }).ConfigureAwait(false);
+            SIPEndPoint serverEndPoint = await m_uac.GetCallDestination(sipCallDescriptor).ConfigureAwait(false);
 
             if (serverEndPoint != null)
             {
                 MediaSession = mediaSession;
                 MediaSession.OnRtpEvent += OnRemoteRtpEvent;
-                MediaSession.OnRtpClosed += (reason) =>
-                {
-                    if (!MediaSession.IsClosed)
-                    {
-                        logger.LogWarning($"RTP channel was closed with reason {reason}.");
-                    }
-                };
 
                 var sdpAnnounceAddress = NetServices.GetLocalAddressForRemote(serverEndPoint.Address);
 
@@ -419,7 +416,7 @@ namespace SIPSorcery.SIP.App
                 {
                     sipCallDescriptor.Content = sdp.ToString();
                     // This initiates the call but does not wait for an answer.
-                    m_uac.Call(sipCallDescriptor);
+                    m_uac.Call(sipCallDescriptor, serverEndPoint);
                 }
             }
             else
@@ -557,7 +554,7 @@ namespace SIPSorcery.SIP.App
                 {
                     // The SDP offer was included in the INVITE request.
                     SDP remoteSdp = SDP.ParseSDPDescription(sipRequest.Body);
-                    var setRemoteResult = MediaSession.SetRemoteDescription(remoteSdp);
+                    var setRemoteResult = MediaSession.SetRemoteDescription(SdpType.offer, remoteSdp);
 
                     if (setRemoteResult != SetDescriptionResultEnum.OK)
                     {
@@ -603,7 +600,7 @@ namespace SIPSorcery.SIP.App
                     {
                         // If the initial INVITE did not contain an offer then the remote description will not yet be set.
                         var remoteSDP = SDP.ParseSDPDescription(m_sipDialogue.RemoteSDP);
-                        var setRemoteResult = MediaSession.SetRemoteDescription(remoteSDP);
+                        var setRemoteResult = MediaSession.SetRemoteDescription(SdpType.offer, remoteSDP);
 
                         if (setRemoteResult != SetDescriptionResultEnum.OK)
                         {
@@ -651,8 +648,10 @@ namespace SIPSorcery.SIP.App
         /// <param name="timeout">Timeout for the transfer request to get accepted.</param>
         /// <param name="ct">Cancellation token. Can be set to cancel the transfer prior to it being
         /// accepted or timing out.</param>
+        /// <param name="customHeaders">Optional. Custom SIP-Headers that will be set in the REFER request sent 
+        /// to the remote party.</param>
         /// <returns>True if the transfer was accepted by the Transferee or false if not.</returns>
-        public Task<bool> BlindTransfer(SIPURI destination, TimeSpan timeout, CancellationToken ct)
+        public Task<bool> BlindTransfer(SIPURI destination, TimeSpan timeout, CancellationToken ct, string[] customHeaders = null)
         {
             if (m_sipDialogue == null)
             {
@@ -661,7 +660,7 @@ namespace SIPSorcery.SIP.App
             }
             else
             {
-                var referRequest = GetReferRequest(destination);
+                var referRequest = GetReferRequest(destination, customHeaders);
                 return Transfer(referRequest, timeout, ct);
             }
         }
@@ -674,8 +673,10 @@ namespace SIPSorcery.SIP.App
         /// <param name="timeout">Timeout for the transfer request to get accepted.</param>
         /// <param name="ct">Cancellation token. Can be set to cancel the transfer prior to it being
         /// accepted or timing out.</param>
+        /// <param name="customHeaders">Optional. Custom SIP-Headers that will be set in the REFER request sent 
+        /// to the remote party.</param>
         /// <returns>True if the transfer was accepted by the Transferee or false if not.</returns>
-        public Task<bool> AttendedTransfer(SIPDialogue transferee, TimeSpan timeout, CancellationToken ct)
+        public Task<bool> AttendedTransfer(SIPDialogue transferee, TimeSpan timeout, CancellationToken ct, string[] customHeaders = null)
         {
             if (m_sipDialogue == null || transferee == null)
             {
@@ -684,7 +685,7 @@ namespace SIPSorcery.SIP.App
             }
             else
             {
-                var referRequest = GetReferRequest(transferee);
+                var referRequest = GetReferRequest(transferee, customHeaders);
                 return Transfer(referRequest, timeout, ct);
             }
         }
@@ -836,7 +837,7 @@ namespace SIPSorcery.SIP.App
                     }
                     else
                     {
-                        var setRemoteResult = MediaSession.SetRemoteDescription(offer);
+                        var setRemoteResult = MediaSession.SetRemoteDescription(SdpType.offer, offer);
 
                         if (setRemoteResult != SetDescriptionResultEnum.OK)
                         {
@@ -1271,7 +1272,7 @@ namespace SIPSorcery.SIP.App
                 {
                     // Update the remote party's SDP.
                     m_sipDialogue.RemoteSDP = sipResponse.Body;
-                    MediaSession.SetRemoteDescription(SDP.ParseSDPDescription(sipResponse.Body));
+                    MediaSession.SetRemoteDescription(SdpType.answer, SDP.ParseSDPDescription(sipResponse.Body));
                 }
             }
             else
@@ -1321,8 +1322,20 @@ namespace SIPSorcery.SIP.App
         /// </summary>
         /// <param name="uac">The client user agent used to initiate the call.</param>
         /// <param name="sipResponse">The INVITE ringing response.</param>
-        private void ClientCallRingingHandler(ISIPClientUserAgent uac, SIPResponse sipResponse)
+        private async void ClientCallRingingHandler(ISIPClientUserAgent uac, SIPResponse sipResponse)
         {
+            if (sipResponse.Status == SIPResponseStatusCodesEnum.SessionProgress &&
+                sipResponse.Body != null)
+            {
+                var setDescriptionResult = MediaSession.SetRemoteDescription(SdpType.answer, SDP.ParseSDPDescription(sipResponse.Body));
+                logger.LogDebug($"Set remote description for early media result {setDescriptionResult}.");
+
+                if (setDescriptionResult == SetDescriptionResultEnum.OK)
+                {
+                    await MediaSession.Start().ConfigureAwait(false);
+                }
+            }
+
             if (ClientCallRinging != null)
             {
                 ClientCallRinging(uac, sipResponse);
@@ -1354,8 +1367,7 @@ namespace SIPSorcery.SIP.App
         {
             if (sipResponse.StatusCode >= 200 && sipResponse.StatusCode <= 299)
             {
-                // Only set the remote RTP end point if there hasn't already been a packet received on it.
-                var setDescriptionResult = MediaSession.SetRemoteDescription(SDP.ParseSDPDescription(sipResponse.Body));
+                var setDescriptionResult = MediaSession.SetRemoteDescription(SdpType.answer, SDP.ParseSDPDescription(sipResponse.Body));
 
                 if (setDescriptionResult == SetDescriptionResultEnum.OK)
                 {
@@ -1387,13 +1399,24 @@ namespace SIPSorcery.SIP.App
         /// Builds the REFER request to initiate a blind transfer on an established call.
         /// </summary>
         /// <param name="referToUri">The SIP URI to transfer the call to.</param>
+        /// <param name="customHeaders">Optional. Can be used to set custom SIP headers in the
+        /// REFER request.</param>
         /// <returns>A SIP REFER request.</returns>
-        private SIPRequest GetReferRequest(SIPURI referToUri)
+        private SIPRequest GetReferRequest(SIPURI referToUri, string[] customHeaders)
         {
             SIPRequest referRequest = m_sipDialogue.GetInDialogRequest(SIPMethodsEnum.REFER);
             referRequest.Header.ReferTo = referToUri.ToString();
             referRequest.Header.Supported = SIPExtensionHeaders.NO_REFER_SUB;
             referRequest.Header.Contact = new List<SIPContactHeader> { SIPContactHeader.GetDefaultSIPContactHeader() };
+
+            if (customHeaders != null && customHeaders.Length > 0)
+            {
+                foreach (string header in customHeaders)
+                {
+                    referRequest.Header.UnknownHeaders.Add(header);
+                }
+            }
+
             return referRequest;
         }
 
@@ -1401,8 +1424,10 @@ namespace SIPSorcery.SIP.App
         /// Builds the REFER request to initiate an attended transfer on an established call.
         /// </summary>
         /// <param name="target">A target dialogue representing the Transferee.</param>
+        /// <param name="customHeaders">Optional. Can be used to set custom SIP headers in the
+        /// REFER request.</param>
         /// <returns>A SIP REFER request.</returns>
-        private SIPRequest GetReferRequest(SIPDialogue target)
+        private SIPRequest GetReferRequest(SIPDialogue target, string[] customHeaders)
         {
             SIPRequest referRequest = m_sipDialogue.GetInDialogRequest(SIPMethodsEnum.REFER);
             SIPURI targetUri = target.RemoteTarget.CopyOf();
@@ -1426,6 +1451,14 @@ namespace SIPSorcery.SIP.App
             targetUri.Headers = replacesHeaders;
             var referTo = new SIPUserField(null, targetUri, null);
             referRequest.Header.ReferTo = referTo.ToString();
+
+            if (customHeaders != null && customHeaders.Length > 0)
+            {
+                foreach (string header in customHeaders)
+                {
+                    referRequest.Header.UnknownHeaders.Add(header);
+                }
+            }
 
             return referRequest;
         }
@@ -1515,7 +1548,7 @@ namespace SIPSorcery.SIP.App
         /// </summary>
         /// <param name="rtpEvent">The received RTP event.</param>
         /// <param name="rtpHeader">THe RTP header on the packet that the event was received in.</param>
-        private void OnRemoteRtpEvent(RTPEvent rtpEvent, RTPHeader rtpHeader)
+        private void OnRemoteRtpEvent(IPEndPoint remoteEP, RTPEvent rtpEvent, RTPHeader rtpHeader)
         {
             OnRtpEvent?.Invoke(rtpEvent, rtpHeader);
 

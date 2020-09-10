@@ -16,15 +16,13 @@
 // ============================================================================
 
 using System;
-using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Text;
-using System.Threading;
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 
 namespace SIPSorcery.Sys
@@ -34,15 +32,12 @@ namespace SIPSorcery.Sys
     /// </summary>
     public class NetServices
     {
-        public const int UDP_PORT_START = 1025;
-        public const int UDP_PORT_END = 65535;
-        private const int RTP_RECEIVE_BUFFER_SIZE = 1000000; //100000000;
-        private const int RTP_SEND_BUFFER_SIZE = 1000000; //100000000;
-        private const int MAXIMUM_UDP_PORT_BIND_ATTEMPTS = 25;  // The maximum number of re-attempts that will be made when trying to bind a UDP socket.
-        private const string INTERNET_IPADDRESS = "1.1.1.1";    // IP address to use when getting default IP address from OS. No connection is established.
+        private const int RTP_RECEIVE_BUFFER_SIZE = 1000000;
+        private const int RTP_SEND_BUFFER_SIZE = 1000000;
+        private const int MAXIMUM_UDP_PORT_BIND_ATTEMPTS = 25;          // The maximum number of re-attempts that will be made when trying to bind a UDP socket.
+        private const string INTERNET_IPADDRESS = "8.8.8.8";              // IP address to use when getting default IP address from OS. No connection is established.
         private const int NETWORK_TEST_PORT = 5060;                       // Port to use when doing a Udp.Connect to determine local IP address (port 0 does not work on MacOS).
         private const int LOCAL_ADDRESS_CACHE_LIFETIME_SECONDS = 300;   // The amount of time to leave the result of a local IP address determination in the cache.
-        private static byte[] MAGIC_COOKIE = new byte[] { 0x41, 0x42, 0x41, 0x42, 0x41 };
 
         private static ILogger logger = Log.Logger;
 
@@ -96,6 +91,11 @@ namespace SIPSorcery.Sys
                 }
 
                 return _localIPAddresses;
+
+                // Using this call seems to be the recommended way to get the local IP addresses.
+                // https://docs.microsoft.com/en-us/dotnet/api/system.net.dns.gethostaddresses?view=netcore-3.1
+                // Unfortunately this does not work on WSL2 prior to .net5.0 see https://github.com/dotnet/runtime/issues/37785
+                //return Dns.GetHostAddresses(string.Empty).ToList();
             }
         }
         private static List<IPAddress> _localIPAddresses = null;
@@ -148,9 +148,9 @@ namespace SIPSorcery.Sys
         /// <returns>A bound socket if successful or throws an ApplicationException if unable to bind.</returns>
         public static Socket CreateBoundUdpSocket(int port, IPAddress bindAddress, bool requireEvenPort = false, bool useDualMode = true)
         {
-            if (requireEvenPort && port != 0)
+            if (requireEvenPort && port != 0 && port % 2 != 0)
             {
-                throw new ArgumentException("Cannot specify both require even port and a specific port to bind on. Set port to 0.");
+                throw new ArgumentException("Cannot specify both require even port and a specific non-even port to bind on. Set port to 0.");
             }
 
             if (bindAddress == null)
@@ -173,8 +173,7 @@ namespace SIPSorcery.Sys
                 try
                 {
                     socket = CreateUdpSocket(addressFamily, useDualMode);
-                    socket.Bind(new IPEndPoint(bindAddress, port));
-
+                    BindUdpSocket(socket, bindAddress, port);
                     int boundPort = (socket.LocalEndPoint as IPEndPoint).Port;
 
                     if (requireEvenPort && boundPort % 2 != 0 && boundPort == IPEndPoint.MaxPort)
@@ -191,11 +190,18 @@ namespace SIPSorcery.Sys
                             // Close the socket, create a new one and try binding on the next consecutive port.
                             socket.Close();
                             socket = CreateUdpSocket(addressFamily, useDualMode);
-                            socket.Bind(new IPEndPoint(bindAddress, boundPort + 1));
+                            BindUdpSocket(socket, bindAddress, boundPort + 1);
                         }
                         else
                         {
-                            logger.LogDebug($"CreateBoundUdpSocket successfully bound on {socket.LocalEndPoint}.");
+                            if (addressFamily == AddressFamily.InterNetworkV6)
+                            {
+                                logger.LogDebug($"CreateBoundUdpSocket successfully bound on {socket.LocalEndPoint}, dual mode {socket.DualMode}.");
+                            }
+                            else
+                            {
+                                logger.LogDebug($"CreateBoundUdpSocket successfully bound on {socket.LocalEndPoint}.");
+                            }
                         }
 
                         success = true;
@@ -256,6 +262,37 @@ namespace SIPSorcery.Sys
             }
         }
 
+        private static void BindUdpSocket(Socket socket, IPAddress bindAddress, int port)
+        {
+            // Nasty code warning. On Windows Subsystem for Linux (WSL) on Windows 10
+            // the OS lets a socket bind on an IPv6 dual mode port even if there
+            // is an IPv4 socket bound to the same port. To prevent this occurring 
+            // a test IPv4 socket bind is carried out.
+            // This happen even if the exclusive address socket option is set.
+            // See https://github.com/dotnet/runtime/issues/36618.
+            if (port != 0 &&
+                socket.AddressFamily == AddressFamily.InterNetworkV6 &&
+                socket.DualMode && IPAddress.IPv6Any.Equals(bindAddress) &&
+                Environment.OSVersion.Platform == PlatformID.Unix &&
+                RuntimeInformation.OSDescription.Contains("Microsoft"))
+            {
+                // Create a dummy IPv4 socket and attempt to bind it to the same port
+                // to check the port isn't already in use.
+                if (Socket.OSSupportsIPv4)
+                {
+                    logger.LogDebug($"WSL detected, carrying out bind check on 0.0.0.0:{port}.");
+
+                    using (Socket testSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp))
+                    {
+                        testSocket.Bind(new IPEndPoint(IPAddress.Any, port));
+                        testSocket.Close();
+                    }
+                }
+            }
+
+            socket.Bind(new IPEndPoint(bindAddress, port));
+        }
+
         /// <summary>
         /// Common instantiation logic for creating a new UDP socket.
         /// </summary>
@@ -266,6 +303,7 @@ namespace SIPSorcery.Sys
         {
             var sock = new Socket(addressFamily, SocketType.Dgram, ProtocolType.Udp);
             sock.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ExclusiveAddressUse, true);
+
             if (addressFamily == AddressFamily.InterNetworkV6)
             {
                 if (!useDualMode)
@@ -290,9 +328,11 @@ namespace SIPSorcery.Sys
         /// <param name="bindAddress">Optional. If null The RTP and control sockets will be created as IPv4 and IPv6 dual mode 
         /// sockets which means they can send and receive either IPv4 or IPv6 packets. If the bind address is specified an attempt
         /// will be made to bind the RTP and optionally control listeners on it.</param>
+        /// <param name="bindPort">Optional. If 0 the choice of port will be left up to the Operating System. If specified
+        /// a single attempt will be made to bind on the port.</param>
         /// <param name="rtpSocket">An output parameter that will contain the allocated RTP socket.</param>
         /// <param name="controlSocket">An output parameter that will contain the allocated control (RTCP) socket.</param>
-        public static void CreateRtpSocket(bool createControlSocket, IPAddress bindAddress, out Socket rtpSocket, out Socket controlSocket)
+        public static void CreateRtpSocket(bool createControlSocket, IPAddress bindAddress, int bindPort, out Socket rtpSocket, out Socket controlSocket)
         {
             if (bindAddress == null)
             {
@@ -301,7 +341,7 @@ namespace SIPSorcery.Sys
 
             CheckBindAddressAndThrow(bindAddress);
 
-            IPEndPoint bindEP = new IPEndPoint(bindAddress, 0);
+            IPEndPoint bindEP = new IPEndPoint(bindAddress, bindPort);
             logger.LogDebug($"CreateRtpSocket attempting to create and bind RTP socket(s) on {bindEP}.");
 
             rtpSocket = null;
@@ -312,7 +352,7 @@ namespace SIPSorcery.Sys
             {
                 try
                 {
-                    rtpSocket = CreateBoundUdpSocket(0, bindAddress, true);
+                    rtpSocket = CreateBoundUdpSocket(bindPort, bindAddress, createControlSocket);
                     rtpSocket.ReceiveBufferSize = RTP_RECEIVE_BUFFER_SIZE;
                     rtpSocket.SendBufferSize = RTP_SEND_BUFFER_SIZE;
 
@@ -336,8 +376,9 @@ namespace SIPSorcery.Sys
                 }
                 catch (ApplicationException) { }
 
-                if (rtpSocket != null && (!createControlSocket || controlSocket != null))
+                if ((rtpSocket != null && (!createControlSocket || controlSocket != null)) || bindPort != 0)
                 {
+                    // If a specific bind port was specified only a single attempt to create the socket is made.
                     break;
                 }
                 else
@@ -378,89 +419,6 @@ namespace SIPSorcery.Sys
             else
             {
                 throw new ApplicationException($"Failed to create and bind RTP socket using bind address {bindAddress}.");
-            }
-        }
-
-        /// <summary>
-        /// Checks that a bound socket is able to receive. The need for this test arose when it was found
-        /// that Windows was allocating the same port if a bind was attempted on 0.0.0.0:0 and then [::]:0.
-        /// Only one of the two sockets could then receive packets to the OS allocated port.
-        /// This check is an attempt to work around the behaviour, see
-        /// https://github.com/dotnet/runtime/issues/36618
-        /// </summary>
-        /// <param name="socket">The bound socket to check for a receive.</param>
-        /// <param name="bindAddress">Optional. If the socket was bound to a single specific address
-        /// this parameter needs to be set so the test can send to it. If not set the test will send to 
-        /// the IPv4 loopback addresses.</param>
-        /// <returns>True is the receive was successful and the socket is usable. False if not.</returns>
-        public static bool DoTestReceive(Socket socket, IPAddress bindAddress)
-        {
-            try
-            {
-                logger.LogDebug($"DoTestReeceive for {socket.LocalEndPoint} and bind address {bindAddress}.");
-
-                byte[] buffer = new byte[MAGIC_COOKIE.Length];
-                ManualResetEvent mre = new ManualResetEvent(false);
-                int bytesRead = 0;
-
-                void endReceive(IAsyncResult ar)
-                {
-                    try
-                    {
-                        if (socket != null)
-                        {
-                            bytesRead = socket.EndReceive(ar);
-                        }
-                    }
-                    catch (Exception) { }
-                    mre.Set();
-                };
-
-                socket.BeginReceive(buffer, 0, buffer.Length, SocketFlags.None, endReceive, null);
-
-                int sendToPort = (socket.LocalEndPoint as IPEndPoint).Port;
-
-                IPAddress sendToAddress = bindAddress ?? IPAddress.Loopback;
-                if (IPAddress.IPv6Any.Equals(sendToAddress))
-                {
-                    sendToAddress = IPAddress.IPv6Loopback;
-                }
-                else if (IPAddress.Any.Equals(sendToAddress))
-                {
-                    sendToAddress = IPAddress.Loopback;
-                }
-
-                IPEndPoint sendTo = new IPEndPoint(sendToAddress, sendToPort);
-                socket.SendTo(MAGIC_COOKIE, sendTo);
-
-                if (mre.WaitOne(TimeSpan.FromMilliseconds(500), false))
-                {
-                    // The receive worked. Check that the magic cookie was received.
-                    if (bytesRead != MAGIC_COOKIE.Length)
-                    {
-                        logger.LogDebug("Bytes read was wrong length for magic cookie in DoTestReceive.");
-                        return false;
-                    }
-                    else if (Encoding.ASCII.GetString(buffer) != Encoding.ASCII.GetString(MAGIC_COOKIE))
-                    {
-                        logger.LogDebug("The bytes read did not match the magic cookie in DoTestReceive.");
-                        return false;
-                    }
-                    else
-                    {
-                        return true;
-                    }
-                }
-                else
-                {
-                    logger.LogDebug("Timed out waiting for magic cookie in DoTestReceive.");
-                    return false;
-                }
-            }
-            catch (Exception excp)
-            {
-                logger.LogWarning($"DoTestReceive received failed with exception {excp.Message}");
-                return false;
             }
         }
 
@@ -515,196 +473,6 @@ namespace SIPSorcery.Sys
         }
 
         /// <summary>
-        /// Attempts to create and bind a new RTP, and optionally an control (RTCP), socket(s) within a specified port range.
-        /// The RTP and control sockets created are IPv4 and IPv6 dual mode sockets which means they can send and receive
-        /// either IPv4 or IPv6 packets.
-        /// </summary>
-        /// <param name="rangeStartPort">The start of the port range that the sockets should be created within.</param>
-        /// <param name="rangeEndPort">The end of the port range that the sockets should be created within.</param>
-        /// <param name="startPort">A port within the range indicated by the start and end ports to attempt to
-        /// bind the new socket(s) on. The main purpose of this parameter is to provide a pseudo-random way to allocate
-        /// the port for a new RTP socket.</param>
-        /// <param name="createControlSocket">True if a control (RTCP) socket should be created. Set to false if RTP
-        /// and RTCP are being multiplexed on the same connection.</param>
-        /// <param name="localAddress">Optional. If null The RTP and control sockets will be created as IPv4 and IPv6 dual mode 
-        /// sockets which means they can send and receive either IPv4 or IPv6 packets. If the local address is specified an attempt
-        /// will be made to bind the RTP and optionally control listeners on it.</param>
-        /// <param name="rtpSocket">An output parameter that will contain the allocated RTP socket.</param>
-        /// <param name="controlSocket">An output parameter that will contain the allocated control (RTCP) socket.</param>
-        //public static void CreateRtpSocketInRange(int rangeStartPort, int rangeEndPort, int startPort, bool createControlSocket, IPAddress localAddress, out Socket rtpSocket, out Socket controlSocket)
-        //{
-        //    if (startPort == 0)
-        //    {
-        //        startPort = Crypto.GetRandomInt(rangeStartPort, rangeEndPort);
-        //    }
-        //    else if (startPort < rangeStartPort || startPort > rangeEndPort)
-        //    {
-        //        logger.LogWarning($"The start port of {startPort} supplied to CreateRtpSocket was outside the request range of {rangeStartPort}:{rangeEndPort}. A new valid start port will be pseudo-randomly chosen.");
-        //        startPort = Crypto.GetRandomInt(rangeStartPort, rangeEndPort);
-        //    }
-
-        //    logger.LogDebug($"CreateRtpSocket start port {startPort}, range {rangeStartPort}:{rangeEndPort}.");
-
-        //    rtpSocket = null;
-        //    controlSocket = null;
-
-        //    bool bindSuccess = false;
-        //    int rtpPort = startPort;
-
-        //    // Attempt to adjust the start port for:
-        //    // - If in use ports can be checked find the first even unused port,
-        //    // - Otherwise if not even then set to the nearest even port.
-        //    if (Environment.OSVersion.Platform == PlatformID.Win32NT)
-        //    {
-        //        // On Windows we can get a list of in use UDP ports and avoid attempting to bind to them.
-        //        IPGlobalProperties ipGlobalProperties = IPGlobalProperties.GetIPGlobalProperties();
-        //        var udpListeners = ipGlobalProperties.GetActiveUdpListeners();
-
-        //        var portRange = Enumerable.Range(rangeStartPort, rangeEndPort - rangeStartPort).OrderBy(x => (x > startPort) ? x : x + rangeEndPort);
-        //        var inUsePorts = udpListeners.Where(x => x.Port >= rangeStartPort && x.Port <= rangeEndPort).Select(x => x.Port);
-
-        //        logger.LogDebug($"In use UDP ports count {inUsePorts.Count()}.");
-
-        //        rtpPort = portRange.Except(inUsePorts).Where(x => x % 2 == 0).FirstOrDefault();
-        //    }
-        //    else
-        //    {
-        //        // If the start port isn't even adjust it so it is. The original RTP specification required RTP ports to be even 
-        //        // numbered and the control port to be the RTP port + 1.
-        //        if (rtpPort % 2 != 0)
-        //        {
-        //            rtpPort = (rtpPort + 1) > rangeEndPort ? rtpPort - 1 : rtpPort + 1;
-        //        }
-        //    }
-
-        //    for (int bindAttempts = 0; bindAttempts <= MAXIMUM_RTP_PORT_BIND_ATTEMPTS; bindAttempts++)
-        //    {
-        //        //lock (_allocatePortsMutex)
-        //        //{
-        //        int controlPort = (createControlSocket == true) ? rtpPort + 1 : 0;
-
-        //        try
-        //        {
-        //            // The potential ports have been found now try and use them.
-        //            if (localAddress != null)
-        //            {
-        //                rtpSocket = new Socket(localAddress.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
-        //                rtpSocket.ReceiveBufferSize = RTP_RECEIVE_BUFFER_SIZE;
-        //                rtpSocket.SendBufferSize = RTP_SEND_BUFFER_SIZE;
-        //                rtpSocket.Bind(new IPEndPoint(localAddress, rtpPort));
-        //            }
-        //            else
-        //            {
-        //                // Create a dual mode IPv4/IPv6 socket.
-        //                rtpSocket = new Socket(SocketType.Dgram, ProtocolType.Udp);
-        //                rtpSocket.ReceiveBufferSize = RTP_RECEIVE_BUFFER_SIZE;
-        //                rtpSocket.SendBufferSize = RTP_SEND_BUFFER_SIZE;
-        //                var bindAddress = (Socket.OSSupportsIPv6) ? IPAddress.IPv6Any : IPAddress.Any;
-        //                rtpSocket.Bind(new IPEndPoint(bindAddress, rtpPort));
-        //            }
-
-        //            if (controlPort != 0)
-        //            {
-        //                if (localAddress != null)
-        //                {
-        //                    controlSocket = new Socket(localAddress.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
-        //                    controlSocket.Bind(new IPEndPoint(localAddress, controlPort));
-        //                }
-        //                else
-        //                {
-        //                    // Create a dual mode IPv4/IPv6 socket.
-        //                    controlSocket = new Socket(SocketType.Dgram, ProtocolType.Udp);
-        //                    var bindAddress = (Socket.OSSupportsIPv6) ? IPAddress.IPv6Any : IPAddress.Any;
-        //                    controlSocket.Bind(new IPEndPoint(bindAddress, controlPort));
-        //                }
-
-        //                logger.LogDebug($"Successfully bound RTP socket {rtpSocket.LocalEndPoint} and control socket {controlSocket.LocalEndPoint}.");
-        //            }
-        //            else
-        //            {
-        //                logger.LogDebug($"Successfully bound RTP socket {rtpSocket.LocalEndPoint}.");
-        //            }
-
-        //            bindSuccess = true;
-
-        //            break;
-        //        }
-        //        catch (SocketException sockExcp)
-        //        {
-        //            if (sockExcp.SocketErrorCode != SocketError.AddressAlreadyInUse)
-        //            {
-        //                if (controlPort != 0)
-        //                {
-        //                    logger.LogWarning($"Socket error {sockExcp.ErrorCode} binding to address {localAddress} and RTP port {rtpPort} and/or control port of {controlPort}, attempt {bindAttempts}.");
-        //                }
-        //                else
-        //                {
-        //                    logger.LogWarning($"Socket error {sockExcp.ErrorCode} binding to address {localAddress} and RTP port {rtpPort}, attempt {bindAttempts}.");
-        //                }
-        //            }
-        //            else
-        //            {
-        //                logger.LogWarning($"SocketException in NetServices.CreateRtpSocket. {sockExcp}");
-        //            }
-        //        }
-        //        catch (Exception excp)
-        //        {
-        //            logger.LogWarning($"Exception in NetServices.CreateRtpSocket. {excp}");
-        //        }
-
-        //        // Adjust the start port for the next attempt.
-        //        int step = Crypto.GetRandomInt(RTP_STEP_MIN, RTP_STEM_MAX);
-        //        step = (step % 2 == 0) ? step : step + 1;
-        //        rtpPort = (rtpPort + step + 1) > rangeEndPort ? rangeStartPort + step : rtpPort + step;
-        //        //}
-        //    }
-
-        //    if (!bindSuccess)
-        //    {
-        //        throw new ApplicationException($"RTP socket allocation failure range {rangeStartPort}:{rangeEndPort}.");
-        //    }
-        //}
-
-        //public static UdpClient CreateRandomUDPListener(IPAddress localAddress, int start, int end, ArrayList inUsePorts, out IPEndPoint localEndPoint)
-        //{
-        //    try
-        //    {
-        //        UdpClient randomClient = null;
-        //        int attempts = 1;
-
-        //        localEndPoint = null;
-
-        //        while (attempts < 50)
-        //        {
-        //            int port = Crypto.GetRandomInt(start, end);
-        //            if (inUsePorts == null || !inUsePorts.Contains(port))
-        //            {
-        //                try
-        //                {
-        //                    localEndPoint = new IPEndPoint(localAddress, port);
-        //                    randomClient = new UdpClient(localEndPoint);
-        //                    break;
-        //                }
-        //                catch
-        //                {
-        //                    //logger.LogWarning("Warning couldn't create UDP end point for " + localAddress + ":" + port + "." + excp.Message);
-        //                }
-
-        //                attempts++;
-        //            }
-        //        }
-
-        //        //logger.LogDebug("Attempts to create UDP end point for " + localAddress + ":" + port + " was " + attempts);
-
-        //        return randomClient;
-        //    }
-        //    catch
-        //    {
-        //        throw new ApplicationException("Unable to create a random UDP listener between " + start + " and " + end);
-        //    }
-        //}
-
-        /// <summary>
         /// This method utilises the OS routing table to determine the local IP address to connect to a destination end point.
         /// It selects the correct local IP address, on a potentially multi-honed host, to communicate with a destination IP address.
         /// See https://github.com/sipsorcery/sipsorcery/issues/97 for elaboration.
@@ -754,10 +522,51 @@ namespace SIPSorcery.Sys
         /// Gets the default local address for this machine for communicating with the Internet.
         /// </summary>
         /// <returns>The local address this machine should use for communicating with the Internet.</returns>
-        private static IPAddress GetLocalAddressForInternet()
+        public static IPAddress GetLocalAddressForInternet()
         {
             var internetAddress = IPAddress.Parse(INTERNET_IPADDRESS);
             return GetLocalAddressForRemote(internetAddress);
+        }
+
+        /// <summary>
+        /// Determines the local IP address to use to connection a remote address and
+        /// returns all the local addresses (IPv4 and IPv6) that are bound to the same 
+        /// interface. The main (and probably sole) use case for this method is 
+        /// gathering host candidates for a WebRTC ICE session. Rather than selecting
+        /// ALL local IP addresses only those on the interface needed to connect to
+        /// the destination are returned.
+        /// </summary>
+        /// <param name="destination">Optional. If not specified the interface that
+        /// connects to the Internet will be used.</param>
+        /// <returns>A list of local IP addresses on the identified interface.</returns>
+        public static List<IPAddress> GetLocalAddressesOnInterface(IPAddress destination)
+        {
+            IPAddress localAddress = GetLocalAddressForRemote(destination ?? IPAddress.Parse(INTERNET_IPADDRESS));
+
+            List<IPAddress> localAddresses = new List<IPAddress>();
+
+            NetworkInterface[] adapters = NetworkInterface.GetAllNetworkInterfaces();
+            foreach (NetworkInterface n in adapters)
+            {
+                // AC 5 Jun 2020: Network interface status is reported as Unknown on WSL.
+                if (n.OperationalStatus == OperationalStatus.Up || n.OperationalStatus == OperationalStatus.Unknown)
+                {
+                    IPInterfaceProperties ipProps = n.GetIPProperties();
+
+                    // Use this interface if it has the local IP address for the destination.
+                    // If the local address couldn't be determined use the first available interface.
+                    if (localAddress == null || ipProps.UnicastAddresses.Any(x => x.Address.Equals(localAddress)))
+                    {
+                        foreach (var unicastAddr in ipProps.UnicastAddresses)
+                        {
+                            localAddresses.Add(unicastAddr.Address);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            return localAddresses;
         }
 
         /// <summary>
@@ -771,7 +580,8 @@ namespace SIPSorcery.Sys
             NetworkInterface[] adapters = NetworkInterface.GetAllNetworkInterfaces();
             foreach (NetworkInterface n in adapters)
             {
-                if (n.OperationalStatus == OperationalStatus.Up)
+                // AC 5 Jun 2020: Network interface status is reported as Unknown on WSL.
+                if (n.OperationalStatus == OperationalStatus.Up || n.OperationalStatus == OperationalStatus.Unknown)
                 {
                     IPInterfaceProperties ipProps = n.GetIPProperties();
                     foreach (var unicastAddr in ipProps.UnicastAddresses)

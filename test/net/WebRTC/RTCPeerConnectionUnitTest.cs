@@ -36,13 +36,13 @@ namespace SIPSorcery.Net.UnitTests
         /// console.log(offer);
         /// </code>
         [Fact]
-        public async void GenerateLocalOfferUnitTest()
+        public void GenerateLocalOfferUnitTest()
         {
             logger.LogDebug("--> " + System.Reflection.MethodBase.GetCurrentMethod().Name);
             logger.BeginScope(System.Reflection.MethodBase.GetCurrentMethod().Name);
 
             RTCPeerConnection pc = new RTCPeerConnection(null);
-            var offer = await pc.createOffer(new RTCOfferOptions());
+            var offer = pc.createOffer(new RTCOfferOptions());
 
             Assert.NotNull(offer);
 
@@ -62,15 +62,15 @@ namespace SIPSorcery.Net.UnitTests
         /// console.log(offer);
         /// </code>
         [Fact]
-        public async void GenerateLocalOfferWithAudioTrackUnitTest()
+        public void GenerateLocalOfferWithAudioTrackUnitTest()
         {
             logger.LogDebug("--> " + System.Reflection.MethodBase.GetCurrentMethod().Name);
             logger.BeginScope(System.Reflection.MethodBase.GetCurrentMethod().Name);
 
             RTCPeerConnection pc = new RTCPeerConnection(null);
-            var audioTrack = new MediaStreamTrack(null, SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
+            var audioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
             pc.addTrack(audioTrack);
-            var offer = await pc.createOffer(new RTCOfferOptions());
+            var offer = pc.createOffer(new RTCOfferOptions());
 
             SDP offerSDP = SDP.ParseSDPDescription(offer.sdp);
 
@@ -81,6 +81,51 @@ namespace SIPSorcery.Net.UnitTests
             Assert.Contains(offerSDP.Media, x => x.Media == SDPMediaTypesEnum.audio);
 
             logger.LogDebug(offer.sdp);
+        }
+
+        /// <summary>
+        /// Tests that attempting to send an RTCP feedback report for an audio stream works correctly.
+        /// </summary>
+        [Fact]
+        public void SendVideoRtcpFeedbackReportUnitTest()
+        {
+            logger.LogDebug("--> " + System.Reflection.MethodBase.GetCurrentMethod().Name);
+            logger.BeginScope(System.Reflection.MethodBase.GetCurrentMethod().Name);
+
+            RTCConfiguration pcConfiguration = new RTCConfiguration
+            {
+                certificates = new List<RTCCertificate>
+                {
+                    new RTCCertificate
+                    {
+                        Certificate = DtlsUtils.CreateSelfSignedCert()
+        }
+                },
+                X_UseRtpFeedbackProfile = true
+            };
+
+            RTCPeerConnection pcSrc = new RTCPeerConnection(pcConfiguration);
+            var videoTrackSrc = new MediaStreamTrack(SDPMediaTypesEnum.video, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.VP8) });
+            pcSrc.addTrack(videoTrackSrc);
+            var offer = pcSrc.createOffer(new RTCOfferOptions());
+
+            logger.LogDebug($"offer: {offer.sdp}");
+
+            RTCPeerConnection pcDst = new RTCPeerConnection(pcConfiguration);
+            var videoTrackDst = new MediaStreamTrack(SDPMediaTypesEnum.video, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.VP8) });
+            pcDst.addTrack(videoTrackDst);
+
+            var setOfferResult = pcDst.setRemoteDescription(offer);
+            Assert.Equal(SetDescriptionResultEnum.OK, setOfferResult);
+
+            var answer = pcDst.createAnswer(null);
+            var setAnswerResult = pcSrc.setRemoteDescription(answer);
+            Assert.Equal(SetDescriptionResultEnum.OK, setAnswerResult);
+
+            logger.LogDebug($"answer: {answer.sdp}");
+
+            RTCPFeedback pliReport = new RTCPFeedback(pcDst.VideoLocalTrack.Ssrc, pcDst.VideoRemoteTrack.Ssrc, PSFBFeedbackTypesEnum.PLI);
+            pcDst.SendRtcpFeedback(SDPMediaTypesEnum.video, pliReport);
         }
     }
 }

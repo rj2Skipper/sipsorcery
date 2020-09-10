@@ -117,13 +117,18 @@ namespace SIPSorcery.UnitTests
         }
     }
 
-    public class MockSIPDNSManager
+    public class MockSIPUriResolver
     {
-        public static SIPDNSLookupResult Resolve(SIPURI sipURI, bool async, bool? preferIPv6)
+        public static Task<SIPEndPoint> ResolveSIPUri(SIPURI uri, bool preferIPv6)
         {
-            // This assumes the input SIP URI has an IP address as the host!
-            IPSocket.TryParseIPEndPoint(sipURI.Host, out var ipEndPoint);
-            return new SIPDNSLookupResult(sipURI, new SIPEndPoint(ipEndPoint));
+            if(IPSocket.TryParseIPEndPoint(uri.Host, out var ipEndPoint))
+            {
+                return Task.FromResult(new SIPEndPoint(uri.Protocol, ipEndPoint));
+            }
+            else
+            {
+                return Task.FromResult<SIPEndPoint>(null);
+            }
         }
     }
 
@@ -139,8 +144,8 @@ namespace SIPSorcery.UnitTests
 
 #pragma warning disable 67
         public event Action<string> OnRtpClosed;
-        public event Action<SDPMediaTypesEnum, RTPPacket> OnRtpPacketReceived;
-        public event Action<RTPEvent, RTPHeader> OnRtpEvent;
+        public event Action<IPEndPoint, SDPMediaTypesEnum, RTPPacket> OnRtpPacketReceived;
+        public event Action<IPEndPoint, RTPEvent, RTPHeader> OnRtpEvent;
 #pragma warning restore 67
 
         public void Close(string reason)
@@ -186,7 +191,7 @@ namespace SIPSorcery.UnitTests
             return offerSdp;
         }
 
-        public SetDescriptionResultEnum SetRemoteDescription(SDP sessionDescription)
+        public SetDescriptionResultEnum SetRemoteDescription(SdpType type, SDP sessionDescription)
         {
             RemoteDescription = sessionDescription;
             return SetDescriptionResultEnum.OK;

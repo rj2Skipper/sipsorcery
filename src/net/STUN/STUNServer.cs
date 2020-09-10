@@ -79,7 +79,7 @@ namespace SIPSorcery.Net
                 FireSTUNPrimaryRequestInTraceEvent(localEndPoint, receivedEndPoint, stunRequest);
 
                 STUNMessage stunResponse = GetResponse(receivedEndPoint, stunRequest, true);
-                byte[] stunResponseBuffer = stunResponse.ToByteBuffer();
+                byte[] stunResponseBuffer = stunResponse.ToByteBuffer(null, false);
 
                 bool changeAddress = false;
                 bool changePort = false;
@@ -148,7 +148,7 @@ namespace SIPSorcery.Net
                 FireSTUNSecondaryRequestInTraceEvent(localEndPoint, receivedEndPoint, stunRequest);
 
                 STUNMessage stunResponse = GetResponse(receivedEndPoint, stunRequest, true);
-                byte[] stunResponseBuffer = stunResponse.ToByteBuffer();
+                byte[] stunResponseBuffer = stunResponse.ToByteBuffer(null, false);
 
                 bool changeAddress = false;
                 bool changePort = false;
@@ -209,7 +209,7 @@ namespace SIPSorcery.Net
             if (stunRequest.Header.MessageType == STUNMessageTypesEnum.BindingRequest)
             {
                 STUNMessage stunResponse = new STUNMessage();
-                stunResponse.Header.MessageType = STUNMessageTypesEnum.BindingResponse;
+                stunResponse.Header.MessageType = STUNMessageTypesEnum.BindingSuccessResponse;
                 stunResponse.Header.TransactionId = stunRequest.Header.TransactionId;
 
                 // Add MappedAddress attribute to indicate the socket the request was received from.

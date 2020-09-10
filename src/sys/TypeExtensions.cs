@@ -17,6 +17,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 
 namespace SIPSorcery.Sys
@@ -47,6 +48,8 @@ namespace SIPSorcery.Sys
               -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
               -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
               -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1, };
+
+        private static readonly char[] hexmap = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
 
         /// <summary>    
         /// Gets a value that indicates whether or not the collection is empty.    
@@ -90,7 +93,7 @@ namespace SIPSorcery.Sys
         /// <param name="s">The input string to extract the slice from.</param>
         /// <param name="startDelimiter">The character to start the slice from. The first instance of the character found is used.</param>
         /// <param name="endDelimeter">The character to end the slice on. The first instance of the character found is used.</param>
-        /// <returns>A slice of the input string or null if the slcie is not possible.</returns>
+        /// <returns>A slice of the input string or null if the slice is not possible.</returns>
         public static string Slice(this string s, char startDelimiter, char endDelimeter)
         {
             if (String.IsNullOrEmpty(s))
@@ -113,24 +116,28 @@ namespace SIPSorcery.Sys
             }
         }
 
-        public static string HexStr(this byte[] buffer)
+        public static string HexStr(this byte[] buffer, char? separator = null)
         {
-            return buffer.HexStr(buffer.Length);
+            return buffer.HexStr(buffer.Length, separator);
         }
 
-        public static string HexStr(this byte[] buffer, int length)
+        public static string HexStr(this byte[] buffer, int length, char? separator = null)
         {
-            // Each byte requires 2 characters.
-            string hexStr = null;
-
-            char[] hexmap = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+            string rv = string.Empty;
 
             for (int i = 0; i < length; i++)
             {
-                hexStr += buffer[i].ToString("X2");
+                var val = buffer[i];
+                rv += hexmap[val >> 4];
+                rv += hexmap[val & 15];
+
+                if (separator != null && i != length - 1)
+                {
+                    rv += separator;
+                }
             }
 
-            return hexStr;
+            return rv.ToUpper();
         }
 
         public static byte[] ParseHexStr(string hexStr)
@@ -172,6 +179,32 @@ namespace SIPSorcery.Sys
         public static bool IsPrivate(this IPAddress address)
         {
             return IPSocket.IsPrivateAddress(address.ToString());
+        }
+
+
+        /// <summary>
+        /// Purpose of this extension is to allow deconstruction of a list into a fixed size tuple.
+        /// </summary>
+        /// <example>
+        /// (var field0, var field1) = "a b c".Split();
+        /// </example>
+        public static void Deconstruct<T>(this IList<T> list, out T first, out T second)
+        {
+            first = list.Count > 0 ? list[0] : default(T);
+            second = list.Count > 1 ? list[1] : default(T);
+        }
+
+        /// <summary>
+        /// Purpose of this extension is to allow deconstruction of a list into a fixed size tuple.
+        /// </summary>
+        /// <example>
+        /// (var field0, var field1, var field2) = "a b c".Split();
+        /// </example>
+        public static void Deconstruct<T>(this IList<T> list, out T first, out T second, out T third)
+        {
+            first = list.Count > 0 ? list[0] : default(T);
+            second = list.Count > 1 ? list[1] : default(T);
+            third = list.Count > 2 ? list[2] : default(T);
         }
     }
 }

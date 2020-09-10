@@ -13,6 +13,7 @@
 // BSD 3-Clause "New" or "Revised" License, see included LICENSE.md file.
 //-----------------------------------------------------------------------------
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -61,7 +62,7 @@ namespace SIPSorcery.Net.UnitTests
             MediaStreamTrack remoteAudioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
             remoteSession.addTrack(remoteAudioTrack);
 
-            var result = remoteSession.SetRemoteDescription(offer);
+            var result = remoteSession.SetRemoteDescription(SIP.App.SdpType.offer, offer);
 
             logger.LogDebug($"Set remote description on remote session result {result}.");
 
@@ -73,7 +74,7 @@ namespace SIPSorcery.Net.UnitTests
             logger.LogDebug("Remote answer: " + offer.ToString());
 
             // Provide the answer back to the local session.
-            result = localSession.SetRemoteDescription(answer);
+            result = localSession.SetRemoteDescription(SIP.App.SdpType.answer, answer);
 
             logger.LogDebug($"Set remote description on local session result {result}.");
 
@@ -108,11 +109,11 @@ namespace SIPSorcery.Net.UnitTests
             var offer = remoteSession.CreateOffer(IPAddress.Loopback);
 
             // Give the offer to the local session that is missing any media tracks.
-            var result = localSession.SetRemoteDescription(offer);
+            var result = localSession.SetRemoteDescription(SIP.App.SdpType.offer, offer);
 
             logger.LogDebug($"Set remote description on local session result {result}.");
 
-            Assert.Equal(SetDescriptionResultEnum.NoLocalMedia, result);
+            Assert.Equal(SetDescriptionResultEnum.NoMatchingMediaType, result);
 
             localSession.Close("normal");
             remoteSession.Close("normal");
@@ -134,7 +135,7 @@ namespace SIPSorcery.Net.UnitTests
 
             var remoteOffer = new SDP();
 
-            var result = localSession.SetRemoteDescription(remoteOffer);
+            var result = localSession.SetRemoteDescription(SIP.App.SdpType.offer, remoteOffer);
 
             logger.LogDebug($"Set remote description on local session result {result}.");
 
@@ -162,7 +163,7 @@ namespace SIPSorcery.Net.UnitTests
             MediaStreamTrack remoteVideoTrack = new MediaStreamTrack(SDPMediaTypesEnum.video, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.VP8) });
             remoteSession.addTrack(remoteVideoTrack);
 
-            var result = localSession.SetRemoteDescription(remoteSession.CreateOffer(IPAddress.Loopback));
+            var result = localSession.SetRemoteDescription(SIP.App.SdpType.offer, remoteSession.CreateOffer(IPAddress.Loopback));
 
             logger.LogDebug($"Set remote description on local session result {result}.");
 
@@ -200,7 +201,7 @@ namespace SIPSorcery.Net.UnitTests
 
             remoteOffer.Media.Add(audioAnnouncement);
 
-            var result = localSession.SetRemoteDescription(remoteOffer);
+            var result = localSession.SetRemoteDescription(SIP.App.SdpType.offer, remoteOffer);
 
             logger.LogDebug($"Set remote description on local session result {result}.");
 
@@ -292,7 +293,7 @@ namespace SIPSorcery.Net.UnitTests
             var offer = remoteSession.CreateOffer(IPAddress.Loopback);
 
             // Give the offer to the local session that is missing a video tracks.
-            var result = localSession.SetRemoteDescription(offer);
+            var result = localSession.SetRemoteDescription(SIP.App.SdpType.offer, offer);
 
             logger.LogDebug($"Set remote description on local session result {result}.");
 
@@ -322,8 +323,8 @@ namespace SIPSorcery.Net.UnitTests
 
             // A local session is created but only has a video track added to it.
             RTPSession localSession = new RTPSession(false, false, false);
-            MediaStreamTrack localAudioTrack = new MediaStreamTrack(SDPMediaTypesEnum.video, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.VP8) });
-            localSession.addTrack(localAudioTrack);
+            MediaStreamTrack localVideoTrack = new MediaStreamTrack(SDPMediaTypesEnum.video, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.VP8) });
+            localSession.addTrack(localVideoTrack);
 
             // Create a remote session with both audio and video tracks.
             RTPSession remoteSession = new RTPSession(false, false, false);
@@ -336,7 +337,7 @@ namespace SIPSorcery.Net.UnitTests
             var offer = remoteSession.CreateOffer(IPAddress.Loopback);
 
             // Give the offer to the local session that is missing a video tracks.
-            var result = localSession.SetRemoteDescription(offer);
+            var result = localSession.SetRemoteDescription(SIP.App.SdpType.offer, offer);
 
             logger.LogDebug($"Set remote description on local session result {result}.");
 
@@ -349,6 +350,87 @@ namespace SIPSorcery.Net.UnitTests
 
             localSession.Close("normal");
             remoteSession.Close("normal");
+        }
+
+        /// <summary>
+        /// Checks that if an RTP session is requested with a specific port and it's already in use an exception is thrown.
+        /// </summary>
+        [Fact]
+        public void CheckDuplicateBindPortFailsUnitTest()
+        {
+            logger.LogDebug("--> " + System.Reflection.MethodBase.GetCurrentMethod().Name);
+            logger.BeginScope(System.Reflection.MethodBase.GetCurrentMethod().Name);
+
+            // Create two RTP sessions. First one acts as the local session to generate the offer.
+            // Second one acts as the remote session to generate the answer.
+
+            RTPSession localSession = new RTPSession(false, false, false, IPAddress.Loopback);
+            MediaStreamTrack localAudioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
+            localSession.addTrack(localAudioTrack);
+
+            var rtpEndPoint = localSession.GetRtpChannel(SDPMediaTypesEnum.audio).RTPLocalEndPoint;
+
+            logger.LogDebug($"RTP session local end point {rtpEndPoint}.");
+
+            // Now attempt to create a second RTP session on the same port as the previous one.
+
+            RTPSession duplicateSession = new RTPSession(false, false, false, IPAddress.Loopback, rtpEndPoint.Port);
+            MediaStreamTrack duplicateTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
+            Assert.Throws<ApplicationException>(() => duplicateSession.addTrack(duplicateTrack));
+
+            localSession.Close(null);
+        }
+
+        /// <summary>
+        /// Checks that the order of the media announcements in the answer matches the order from
+        /// the remote offer.
+        /// </summary>
+        [Fact]
+        public void MediaOrderMatchesRemoteOfferUnitTest()
+        {
+            logger.LogDebug("--> " + System.Reflection.MethodBase.GetCurrentMethod().Name);
+            logger.BeginScope(System.Reflection.MethodBase.GetCurrentMethod().Name);
+
+            // By default offers made by us always put audio first. Create a remote SDP offer 
+            // with the video first.
+            string remoteSdp =
+            @"v=0
+o=- 1986548327 0 IN IP4 127.0.0.1
+s=-
+c=IN IP4 127.0.0.1
+t=0 0
+m=video 60638 RTP/AVP 100
+a=rtpmap:100 VP8/90000
+a=sendrecv
+m=audio 60640 RTP/AVP 0
+a=rtpmap:0 PCMU/8000
+a=sendrecv";
+
+            // Create a local session and add the video track first.
+            RTPSession localSession = new RTPSession(false, false, false);
+            MediaStreamTrack localAudioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
+            localSession.addTrack(localAudioTrack);
+            MediaStreamTrack localVideoTrack = new MediaStreamTrack(SDPMediaTypesEnum.video, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.VP8) });
+            localSession.addTrack(localVideoTrack);
+
+            var offer = SDP.ParseSDPDescription(remoteSdp);
+
+            logger.LogDebug($"Remote offer: {offer}");
+
+            var result = localSession.SetRemoteDescription(SIP.App.SdpType.offer, offer);
+
+            logger.LogDebug($"Set remote description on local session result {result}.");
+
+            Assert.Equal(SetDescriptionResultEnum.OK, result);
+
+            var answer = localSession.CreateAnswer(null);
+
+            logger.LogDebug($"Local answer: {answer}");
+
+            Assert.Equal(offer.Media.First().Media, answer.Media.First().Media);
+            Assert.Equal(offer.Media.Last().Media, answer.Media.Last().Media);
+
+            localSession.Close("normal");
         }
     }
 }

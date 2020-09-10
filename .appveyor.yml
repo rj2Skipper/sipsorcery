@@ -1,7 +1,10 @@
-version: 1.0.{build}
+version: 4.0.{build}
 branches:
   except:
+    - gh-pages
     - mac-ci
+    - ubuntu-ci
+    - wsl-ci
 environment:
   APPVEYOR_SAVE_CACHE_ON_ERROR: true
   access_token:
