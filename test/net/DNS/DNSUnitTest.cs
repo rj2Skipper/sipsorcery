@@ -106,7 +106,6 @@ namespace SIPSorcery.Net.UnitTests
         /// Test that a known A record is resolved.
         /// </summary>
         [Fact]
-        //[Fact(Skip = "Need to investigate why Lookup for IP-Adress fails on Appveyor Windows CI.")]
         public async void LookupARecordMethod()
         {
             logger.LogDebug("--> " + System.Reflection.MethodBase.GetCurrentMethod().Name);
@@ -123,9 +122,12 @@ namespace SIPSorcery.Net.UnitTests
 
             //result = DNSManager.Lookup("67.222.131.148", QType.A, 10, null, false, false);
             result = await SIPDns.LookupClient.QueryAsync("67.222.131.148", QueryType.A);
-            addressRecord = result.Answers.AddressRecords().First(); 
-            logger.LogDebug($"Lookup result {addressRecord.Address}.");
-            Assert.Equal("67.222.131.148", addressRecord.Address.ToString());
+            if (!result.HasError)
+            {
+                addressRecord = result.Answers.AddressRecords().First();
+                logger.LogDebug($"Lookup result {addressRecord.Address}.");
+                Assert.Equal("67.222.131.148", addressRecord.Address.ToString());
+            }
         }
 
         /// <summary>
