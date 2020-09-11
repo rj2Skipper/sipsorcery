@@ -50,6 +50,9 @@ namespace SIPSorcery.SIP
     /// Observations from the field.
     /// - A DNS server has been observed to not respond at all to NAPTR or SRV record queries meaning lookups for
     ///   them will permanently time out.
+    ///   
+    /// rj2 2020-09-11: re-implement NAPTR lookup, since i've implemented NAPTR-Queries in DnsClient.NET now
+    /// -NAPTR lookup is only done, if UseNAPTRLookups is TRUE
     /// 
     /// rj2 2020-09-11: re-implement PreferIPv6NameResolution global flag
     /// </remarks>
@@ -65,6 +68,12 @@ namespace SIPSorcery.SIP
         /// Set to true to prefer IPv6 lookups of hostnames. By default IPv4 lookups will be performed.
         /// </summary>
         public static bool PreferIPv6NameResolution = false;
+
+        /// <summary>
+        /// Do without the NAPTR lookups by default. Very few organisations appear to use them and it can 
+        /// cost up to 2.5s to get a failed resolution.
+        /// </summary>
+        public static bool UseNAPTRLookups = false;
 
         /// <summary>
         /// Don't use IN_ANY queries by default. These are useful if a DNS server supports them as they can
@@ -129,11 +138,11 @@ namespace SIPSorcery.SIP
                 if (uri.HostPort != null)
                 {
                     // Explicit port means no SRV lookup.
-                    return SIPLookupFromCache(uri, preferIPv6??PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A, preferIPv6);
+                    return SIPLookupFromCache(uri, preferIPv6 ?? PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A, preferIPv6);
                 }
                 else
                 {
-                    return SIPLookupFromCache(uri, QueryType.SRV, preferIPv6);
+                    return SIPLookupFromCache(uri, UseNAPTRLookups ? QueryType.NAPTR : QueryType.SRV, preferIPv6);
                 }
             }
         }
@@ -174,11 +183,11 @@ namespace SIPSorcery.SIP
                     if (uri.HostPort != null)
                     {
                         // Explicit port means no SRV lookup.
-                        return SIPLookupAsync(uri, preferIPv6??PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A, preferIPv6, ct);
+                        return SIPLookupAsync(uri, preferIPv6 ?? PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A, preferIPv6, ct);
                     }
                     else
                     {
-                        return SIPLookupAsync(uri, QueryType.SRV, preferIPv6, ct);
+                        return SIPLookupAsync(uri, UseNAPTRLookups ? QueryType.NAPTR : QueryType.SRV, preferIPv6, ct);
                     }
                 }
             }
@@ -302,6 +311,41 @@ namespace SIPSorcery.SIP
             {
                 switch (queryType)
                 {
+                    case QueryType.NAPTR:
+
+                        try
+                        {
+                            var naptrResults = await _lookupClient.QueryAsync(host, QueryType.NAPTR);
+                            if(!naptrResults.HasError)
+                            {
+                                if (naptrResults.Answers?.NaptrRecords()?.Count() > 0)
+                                {
+                                    var naptrService = SIPServices.GetNAPTRServiceForSIPURI(uri);
+                                    var naptrResult = naptrResults.Answers.NaptrRecords().Where(naptr => naptr.Services == naptrService).First();
+                                    if (naptrResult != null)
+                                    {
+                                        var srvResult = await _lookupClient.ResolveServiceAsync(naptrResult.Replacement);
+                                        (var srvHost, var srvPort) = GetHostAndPortFromSrvResult(srvResult);
+                                        if (srvHost != null)
+                                        {
+                                            host = srvHost;
+                                            port = srvPort != 0 ? srvPort : port;
+                                        }
+                                        queryType = preferIPv6 ?? PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A; 
+                                        
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception srvExcp)
+                        {
+                            logger.LogWarning($"SIPDNS exception on SRV lookup. {srvExcp.Message}.");
+                        }
+                        queryType = QueryType.SRV;
+
+                        break;
+
                     case QueryType.SRV:
 
                         try
@@ -321,7 +365,7 @@ namespace SIPSorcery.SIP
                         {
                             logger.LogWarning($"SIPDNS exception on SRV lookup. {srvExcp.Message}.");
                         }
-                        queryType = preferIPv6??PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A;
+                        queryType = preferIPv6 ?? PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A;
 
                         break;
 
@@ -457,7 +501,7 @@ namespace SIPSorcery.SIP
         /// <returns>A SIP end point for the host or null if the URI cannot be resolved.</returns>
         private static SIPEndPoint ResolveLocalHostname(SIPURI uri, bool? preferIPv6 = null)
         {
-            AddressFamily family = preferIPv6??PreferIPv6NameResolution ? AddressFamily.InterNetworkV6 :
+            AddressFamily family = preferIPv6 ?? PreferIPv6NameResolution ? AddressFamily.InterNetworkV6 :
                        AddressFamily.InterNetwork;
 
             if (!ushort.TryParse(uri.HostPort, out var uriPort))

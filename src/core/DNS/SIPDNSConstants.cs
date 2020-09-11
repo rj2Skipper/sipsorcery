@@ -69,6 +69,40 @@ namespace SIPSorcery.SIP
             }
         }
 
+        public static string GetNAPTRServiceForSIPURI(SIPURI uri)
+        {
+            if (uri.Scheme == SIPSchemesEnum.sip && uri.Protocol == SIPProtocolsEnum.udp)
+            {
+                return SIPDNSConstants.NAPTR_SIP_UDP_SERVICE;
+            }
+            else if (uri.Scheme == SIPSchemesEnum.sip && uri.Protocol == SIPProtocolsEnum.tcp)
+            {
+                return SIPDNSConstants.NAPTR_SIP_TCP_SERVICE;
+            }
+            else if (uri.Scheme == SIPSchemesEnum.sips && uri.Protocol == SIPProtocolsEnum.tcp)
+            {
+                return SIPDNSConstants.NAPTR_SIPS_TCP_SERVICE;
+            }
+            else if (uri.Scheme == SIPSchemesEnum.sips && uri.Protocol == SIPProtocolsEnum.tls)
+            {
+                return SIPDNSConstants.NAPTR_SIPS_TCP_SERVICE;
+            }
+            else if (uri.Scheme == SIPSchemesEnum.sip && uri.Protocol == SIPProtocolsEnum.tls)
+            {
+                return SIPDNSConstants.SRV_SIP_TLS_QUERY_PREFIX;
+            }
+            else if (uri.Protocol == SIPProtocolsEnum.wss)
+            {
+                return SIPDNSConstants.NAPTR_SIPS_WEBSOCKET_SERVICE;
+            }
+            else if (uri.Protocol == SIPProtocolsEnum.ws)
+            {
+                return SIPDNSConstants.NAPTR_SIP_WEBSOCKET_SERVICE;
+            }
+
+            return SIPDNSConstants.NAPTR_SIP_UDP_SERVICE;
+        }
+
         /// <summary>
         /// This method is needed because "sips" URI's have to be looked
         /// up with a SRV record containing "tcp" NOT "tls" and same for web sockets.
