@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------------
 // Filename: SrtcpTransformer.cs
 //
-// Description: Encapsulates the encryption / decryption logic for SRTCP packets.
+// Description: Encapsulates the encryption/decryption logic for SRTCP packets.
 //
 // Derived From:
 // https://github.com/RestComm/media-core/blob/master/rtp/src/main/java/org/restcomm/media/core/rtp/crypto/SRTCPTransformer.java
@@ -17,6 +17,7 @@
 // Original Source: AGPL-3.0 License
 //-----------------------------------------------------------------------------
 
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 
 namespace SIPSorcery.Net
@@ -36,7 +37,7 @@ namespace SIPSorcery.Net
         private SrtpTransformEngine reverseEngine;
 
         /** All the known SSRC's corresponding SRTCPCryptoContexts */
-        private Dictionary<long, SrtcpCryptoContext> contexts;
+        private ConcurrentDictionary<long, SrtcpCryptoContext> contexts;
 
         public SrtcpTransformer(SrtpTransformEngine engine) : this(engine, engine)
         {
@@ -48,15 +49,14 @@ namespace SIPSorcery.Net
             this.packet = new RawPacket();
             this.forwardEngine = forwardEngine;
             this.reverseEngine = reverseEngine;
-            this.contexts = new Dictionary<long, SrtcpCryptoContext>();
+            this.contexts = new ConcurrentDictionary<long, SrtcpCryptoContext>();
         }
 
-        /**
-         * Encrypts a SRTCP packet
-         * 
-         * @param pkt plain SRTCP packet to be encrypted
-         * @return encrypted SRTCP packet
-         */
+        /// <summary>
+        /// Encrypts a SRTCP packet
+        /// </summary>
+        /// <param name="pkt">plain SRTCP packet to be encrypted.</param>
+        /// <returns>encrypted SRTCP packet.</returns>
         public byte[] Transform(byte[] pkt)
         {
             return Transform(pkt, 0, pkt.Length);
@@ -76,7 +76,7 @@ namespace SIPSorcery.Net
             {
                 context = forwardEngine.GetDefaultContextControl().DeriveContext(ssrc);
                 context.DeriveSrtcpKeys();
-                contexts[ssrc] = context;
+                contexts.AddOrUpdate(ssrc, context, (a, b) => context);
             }
 
             // Secure packet into SRTCP format
@@ -115,12 +115,11 @@ namespace SIPSorcery.Net
             return null;
         }
 
-        /**
-         * Close the transformer and underlying transform engine.
-         * 
-         * The close functions closes all stored crypto contexts. This deletes key data 
-         * and forces a cleanup of the crypto contexts.
-         */
+        /// <summary>
+        /// Close the transformer and underlying transform engine.
+        /// The close functions closes all stored crypto contexts. This deletes key data
+        /// and forces a cleanup of the crypto contexts.
+        /// </summary>
         public void Close()
         {
             forwardEngine.Close();
@@ -132,11 +131,8 @@ namespace SIPSorcery.Net
             var keys = new List<long>(contexts.Keys);
             foreach (var ssrc in keys)
             {
-                var context = contexts[ssrc];
-
-                contexts.Remove(ssrc);
-                if (context != null)
-                {
+                if (contexts.TryRemove(ssrc, out var context))
+                { 
                     context.Close();
                 }
             }

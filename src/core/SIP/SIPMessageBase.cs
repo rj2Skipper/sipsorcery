@@ -70,9 +70,5 @@ namespace SIPSorcery.SIP
         {
             this.Header?.Dispose();
         }
-        
-        internal DateTime DnsLookupStartedAt = DateTime.MinValue;
-        internal DateTime DnsLookupFailedAt = DateTime.MinValue;
-        internal SIPEndPoint DnsResult;
     }
 }

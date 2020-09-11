@@ -17,10 +17,12 @@
 // Modified by Andrés Leone Gámez
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Sockets;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Org.BouncyCastle.Crypto.Tls;
 using Org.BouncyCastle.Security;
@@ -288,17 +290,25 @@ namespace SIPSorcery.Net.Sctp
                     {
                         try
                         {
-                            int length = _transp.Receive(buf, 0, buf.Length, TICK);
-                            if (length == DtlsSrtpTransport.DTLS_RECEIVE_ERROR_CODE)
+                            var length = _transp.Receive(buf, 0, buf.Length, TICK);
+                            if (length > 0)
+                            {
+                                //var b = Packet.getHex(buf, 0, length);
+                                //logger.LogInformation($"DTLS message recieved\n{b}");   
+                                ByteBuffer pbb = new ByteBuffer(buf);
+                                pbb.Limit = length;
+                                Packet rec = new Packet(pbb);
+                                deal(rec);
+                            }
+                            else if (length == DtlsSrtpTransport.DTLS_RECEIVE_ERROR_CODE)
                             {
                                 // The DTLS transport has been closed or i no longer available.
                                 break;
                             }
-                            //logger.LogDebug("SCTP message received: " + Packet.getHex(buf, 0, length));
-                            ByteBuffer pbb = new ByteBuffer(buf);
-                            pbb.Limit = length;
-                            Packet rec = new Packet(pbb);
-                            deal(rec);
+                            else
+                            {
+                                logger.LogInformation("Timeout -> short packet " + length);
+                            }
                         }
                         catch (SocketException e)
                         {
@@ -327,7 +337,7 @@ namespace SIPSorcery.Net.Sctp
                     logger.LogDebug("Association receive failed " + ex.GetType().Name + " " + ex.ToString());
                 }
             });
-            _rcv.Priority = ThreadPriority.AboveNormal;
+            _rcv.Priority = ThreadPriority.Highest;
             _rcv.Name = "AssocRcv" + __assocNo;
             _rcv.Start();
         }
@@ -405,7 +415,7 @@ namespace SIPSorcery.Net.Sctp
                     }
                     else
                     {
-                       // logger.LogDebug("Got an INIT when state was " + _state.ToString() + " - ignoring it for now ");
+                        // logger.LogDebug("Got an INIT when state was " + _state.ToString() + " - ignoring it for now ");
                     }
                     break;
                 case ChunkType.INITACK:
@@ -457,9 +467,9 @@ namespace SIPSorcery.Net.Sctp
                     break;
                 case ChunkType.ERROR:
                     logger.LogWarning($"SCTP error chunk received.");
-                    foreach(var vparam in c._varList)
+                    foreach (var vparam in c._varList)
                     {
-                        if(vparam is KnownError)
+                        if (vparam is KnownError)
                         {
                             var knownErr = vparam as KnownError;
                             logger.LogWarning($"{knownErr.getName()}, {knownErr}");
@@ -973,8 +983,8 @@ namespace SIPSorcery.Net.Sctp
             {
                 //logger.LogDebug("due to reconfig stream " + st);
                 cs[0] = reconfigState.makeClose(st);
+                this.send(cs);
             }
-            this.send(cs);
         }
 
         public SCTPStream mkStream(string label)
@@ -1015,6 +1025,10 @@ namespace SIPSorcery.Net.Sctp
 
         public SCTPStream delStream(int s)
         {
+            if (!_streams.ContainsKey(s))
+            {
+                return null;
+            }
             var st = _streams[s];
             _streams.Remove(s);
             return st;
@@ -1060,7 +1074,7 @@ namespace SIPSorcery.Net.Sctp
 
         public int maxMessageSize()
         {
-            return 1 << 16; // shrug - I don't know 
+            return 1 << 20; // shrug - I don't know 
         }
 
         public bool canSend()

@@ -5,8 +5,7 @@ branches:
     - mac-ci
     - ubuntu-ci
     - win-ci
-environment:
-  APPVEYOR_SAVE_CACHE_ON_ERROR: true
+skip_tags: true
 image: Visual Studio 2019
 build_script:
 # Install dotnet on WSL and then build and run tests.
@@ -19,4 +18,4 @@ build_script:
        wsl sudo apt-get install -y apt-transport-https
        wsl sudo apt-get update -y
        wsl sudo apt-get install -y dotnet-sdk-3.1
-       wsl dotnet test src/SIPSorcery.sln -c Release --framework netcoreapp3.1
+       wsl dotnet test test/unit/SIPSorcery.UnitTests.csproj -c Release --framework netcoreapp3.1

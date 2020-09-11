@@ -31,16 +31,28 @@ namespace SIPSorcery.Net
     /// A basic UDP socket manager. The RTP channel may need both an RTP and Control socket. This class encapsulates
     /// the common logic for UDP socket management.
     /// </summary>
+    /// <remarks>
+    /// .NET Framework Socket source:
+    /// https://referencesource.microsoft.com/#system/net/system/net/Sockets/Socket.cs
+    /// .NET Core Socket source:
+    /// https://github.com/dotnet/runtime/blob/master/src/libraries/System.Net.Sockets/src/System/Net/Sockets/Socket.cs
+    /// Mono Socket source:
+    /// https://github.com/mono/mono/blob/master/mcs/class/System/System.Net.Sockets/Socket.cs
+    /// </remarks>
     public sealed class UdpReceiver
     {
-        private const int RECEIVE_BUFFER_SIZE = 2048;   // MTU is 1452 bytes so this should be heaps.
+        /// <summary>
+        /// MTU is 1452 bytes so this should be heaps.
+        /// TODO: What about fragmented UDP packets that are put back together by the OS?
+        /// </summary>
+        private const int RECEIVE_BUFFER_SIZE = 2048;
 
         private static ILogger logger = Log.Logger;
 
         private readonly Socket m_udpSocket;
         private byte[] m_recvBuffer;
         private bool m_isClosed;
-        private int m_localPort;
+        private IPEndPoint m_localEndPoint;
         private AddressFamily m_addressFamily;
 
         /// <summary>
@@ -56,7 +68,7 @@ namespace SIPSorcery.Net
         public UdpReceiver(Socket udpSocket)
         {
             m_udpSocket = udpSocket;
-            m_localPort = (m_udpSocket.LocalEndPoint as IPEndPoint).Port;
+            m_localEndPoint = m_udpSocket.LocalEndPoint as IPEndPoint;
             m_recvBuffer = new byte[RECEIVE_BUFFER_SIZE];
             m_addressFamily = m_udpSocket.LocalEndPoint.AddressFamily;
         }
@@ -69,7 +81,7 @@ namespace SIPSorcery.Net
         {
             try
             {
-                EndPoint recvEndPoint = (m_udpSocket.LocalEndPoint.AddressFamily == AddressFamily.InterNetwork) ? new IPEndPoint(IPAddress.Any, 0) : new IPEndPoint(IPAddress.IPv6Any, 0);
+                EndPoint recvEndPoint = m_addressFamily == AddressFamily.InterNetwork ? new IPEndPoint(IPAddress.Any, 0) : new IPEndPoint(IPAddress.IPv6Any, 0);
                 m_udpSocket.BeginReceiveFrom(m_recvBuffer, 0, m_recvBuffer.Length, SocketFlags.None, ref recvEndPoint, EndReceiveFrom, null);
             }
             catch (ObjectDisposedException) { } // Thrown when socket is closed. Can be safely ignored.
@@ -117,7 +129,7 @@ namespace SIPSorcery.Net
 
                         byte[] packetBuffer = new byte[bytesRead];
                         Buffer.BlockCopy(m_recvBuffer, 0, packetBuffer, 0, bytesRead);
-                        OnPacketReceived?.Invoke(this, m_localPort, remoteEP as IPEndPoint, packetBuffer);
+                        OnPacketReceived?.Invoke(this, m_localEndPoint.Port, remoteEP as IPEndPoint, packetBuffer);
                     }
                 }
             }
@@ -344,7 +356,7 @@ namespace SIPSorcery.Net
         /// <param name="buffer">The data to send.</param>
         /// <returns>The result of initiating the send. This result does not reflect anything about
         /// whether the remote party received the packet or not.</returns>
-        internal virtual SocketError SendAsync(RTPChannelSocketsEnum sendOn, IPEndPoint dstEndPoint, byte[] buffer)
+        internal virtual SocketError Send(RTPChannelSocketsEnum sendOn, IPEndPoint dstEndPoint, byte[] buffer)
         {
             if (m_isClosed)
             {
@@ -352,15 +364,15 @@ namespace SIPSorcery.Net
             }
             else if (dstEndPoint == null)
             {
-                throw new ArgumentException("dstEndPoint", "An empty destination was specified to SendAsync in RTPChannel.");
+                throw new ArgumentException("dstEndPoint", "An empty destination was specified to Send in RTPChannel.");
             }
             else if (buffer == null || buffer.Length == 0)
             {
-                throw new ArgumentException("buffer", "The buffer must be set and non empty for SendAsync in RTPChannel.");
+                throw new ArgumentException("buffer", "The buffer must be set and non empty for Send in RTPChannel.");
             }
             else if (IPAddress.Any.Equals(dstEndPoint.Address) || IPAddress.IPv6Any.Equals(dstEndPoint.Address))
             {
-                logger.LogWarning($"The destination address for SendAsync in RTPChannel cannot be {dstEndPoint.Address}.");
+                logger.LogWarning($"The destination address for Send in RTPChannel cannot be {dstEndPoint.Address}.");
                 return SocketError.DestinationAddressRequired;
             }
             else
@@ -398,7 +410,7 @@ namespace SIPSorcery.Net
                 }
                 catch (Exception excp)
                 {
-                    logger.LogError($"Exception RTPChannel.SendAsync. {excp}");
+                    logger.LogError($"Exception RTPChannel.Send. {excp}");
                     return SocketError.Fault;
                 }
             }

@@ -22,8 +22,10 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NAudio.Codecs;
 using Serilog;
+using Serilog.Extensions.Logging;
 using SIPSorcery.Net;
 using SIPSorceryMedia;
 using WebSocketSharp;
@@ -68,7 +70,7 @@ namespace WebRTCServer
         private const string LOCALHOST_CERTIFICATE_PATH = "certs/localhost.pfx";
         private const int WEBSOCKET_PORT = 8081;
 
-        private static Microsoft.Extensions.Logging.ILogger logger = SIPSorcery.Sys.Log.Logger;
+        private static Microsoft.Extensions.Logging.ILogger logger = NullLogger.Instance;
 
         private static WebSocketServer _webSocketServer;
         private static MediaSource _mediaSource;
@@ -77,8 +79,9 @@ namespace WebRTCServer
         private static uint _vp8Timestamp;
         private static uint _mulawTimestamp;
 
-        private delegate void MediaSampleReadyDelegate(SDPMediaTypesEnum mediaType, uint timestamp, byte[] sample);
-        private static event MediaSampleReadyDelegate OnMediaSampleReady;
+        private delegate void MediaSampleReadyDelegate(uint timestamp, byte[] sample);
+        private static event MediaSampleReadyDelegate OnAudioSampleReady;
+        private static event MediaSampleReadyDelegate OnVideoSampleReady;
 
         static void Main()
         {
@@ -89,7 +92,7 @@ namespace WebRTCServer
             CancellationTokenSource exitCts = new CancellationTokenSource(); // Cancellation token to stop the SIP transport and RTP stream.
             ManualResetEvent exitMre = new ManualResetEvent(false);
 
-            AddConsoleLogger();
+            logger = AddConsoleLogger();
 
             if (!File.Exists(MP4_FILE_PATH))
             {
@@ -162,7 +165,8 @@ namespace WebRTCServer
 
                 if (state == RTCPeerConnectionState.closed || state == RTCPeerConnectionState.disconnected || state == RTCPeerConnectionState.failed)
                 {
-                    OnMediaSampleReady -= peerConnection.SendMedia;
+                    OnVideoSampleReady -= peerConnection.SendVideo;
+                    OnAudioSampleReady -= peerConnection.SendAudio;
                     peerConnection.OnReceiveReport -= RtpSession_OnReceiveReport;
                     peerConnection.OnSendReport -= RtpSession_OnSendReport;
                 }
@@ -171,7 +175,8 @@ namespace WebRTCServer
                     if (!_isSampling)
                     {
                         _isSampling = true;
-                        OnMediaSampleReady += peerConnection.SendMedia;
+                        OnVideoSampleReady += peerConnection.SendVideo;
+                        OnAudioSampleReady += peerConnection.SendAudio;
                         _ = Task.Run(StartMedia);
                     }
                 }
@@ -251,7 +256,7 @@ namespace WebRTCServer
 
                 while (true)
                 {
-                    if (OnMediaSampleReady == null)
+                    if (OnVideoSampleReady == null && OnAudioSampleReady == null)
                     {
                         logger.LogDebug("No active clients, media sampling paused.");
                         break;
@@ -284,7 +289,7 @@ namespace WebRTCServer
                                 }
                             }
 
-                            OnMediaSampleReady?.Invoke(SDPMediaTypesEnum.video, _vp8Timestamp, vpxEncodedBuffer);
+                            OnVideoSampleReady?.Invoke(_vp8Timestamp, vpxEncodedBuffer);
 
                             //Console.WriteLine($"Video SeqNum {videoSeqNum}, timestamp {videoTimestamp}, buffer length {vpxEncodedBuffer.Length}, frame count {sampleProps.FrameCount}.");
 
@@ -304,7 +309,7 @@ namespace WebRTCServer
                                 mulawSample[sampleIndex++] = ulawByte;
                             }
 
-                            OnMediaSampleReady?.Invoke(SDPMediaTypesEnum.audio, _mulawTimestamp, mulawSample);
+                            OnAudioSampleReady?.Invoke(_mulawTimestamp, mulawSample);
 
                             //Console.WriteLine($"Audio SeqNum {audioSeqNum}, timestamp {audioTimestamp}, buffer length {mulawSample.Length}.");
 
@@ -359,18 +364,18 @@ namespace WebRTCServer
         }
 
         /// <summary>
-        ///  Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
+        /// Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
         /// </summary>
-        private static void AddConsoleLogger()
+        private static Microsoft.Extensions.Logging.ILogger AddConsoleLogger()
         {
-            var loggerFactory = new Microsoft.Extensions.Logging.LoggerFactory();
-            var loggerConfig = new LoggerConfiguration()
+            var serilogLogger = new LoggerConfiguration()
                 .Enrich.FromLogContext()
                 .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
                 .WriteTo.Console()
                 .CreateLogger();
-            loggerFactory.AddSerilog(loggerConfig);
-            SIPSorcery.Sys.Log.LoggerFactory = loggerFactory;
+            var factory = new SerilogLoggerFactory(serilogLogger);
+            SIPSorcery.LogFactory.Set(factory);
+            return factory.CreateLogger<Program>();
         }
     }
 }

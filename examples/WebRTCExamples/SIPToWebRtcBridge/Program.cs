@@ -28,19 +28,18 @@
 
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
-using SIPSorcery.Media;
+using Serilog.Extensions.Logging;
 using SIPSorcery.Net;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
-using SIPSorceryMedia;
 using WebSocketSharp;
 using WebSocketSharp.Net.WebSockets;
 using WebSocketSharp.Server;
@@ -76,7 +75,7 @@ namespace SIPSorcery
         private const string WEBSOCKET_CERTIFICATE_PATH = "certs/localhost.pfx";
         private const int WEBSOCKET_PORT = 8081;
 
-        private static Microsoft.Extensions.Logging.ILogger Log = SIPSorcery.Sys.Log.Logger;
+        private static Microsoft.Extensions.Logging.ILogger Log = NullLogger.Instance;
 
         private static WebSocketServer _webSocketServer;
         private static RTCPeerConnection _peerConnection;
@@ -92,7 +91,7 @@ namespace SIPSorcery
             // Plumbing code to facilitate a graceful exit.
             CancellationTokenSource exitCts = new CancellationTokenSource(); // Cancellation token to stop the SIP transport and RTP stream.
 
-            AddConsoleLogger();
+            Log = AddConsoleLogger();
 
             // Start web socket.
             Console.WriteLine("Starting web socket server...");
@@ -115,7 +114,7 @@ namespace SIPSorcery
 
             //EnableTraceLogs(sipTransport);
 
-            RtpAVSession rtpAVSession = null;
+            RTPSession rtpSession = null;
 
             // Create a SIP user agent to receive a call from a remote SIP client.
             // Wire up event handlers for the different stages of the call.
@@ -153,9 +152,13 @@ namespace SIPSorcery
                         Log.LogInformation($"Incoming call request from {remoteEndPoint}: {sipRequest.StatusLine}.");
                         var incomingCall = userAgent.AcceptCall(sipRequest);
 
-                        rtpAVSession = new RtpAVSession(new AudioOptions { AudioSource = AudioSourcesEnum.CaptureDevice }, null);
-                        await userAgent.Answer(incomingCall, rtpAVSession);
-                        rtpAVSession.OnRtpPacketReceived += (ep, mediaType, rtpPacket) => ForwardMedia(mediaType, rtpPacket);
+                        rtpSession = new RTPSession(false, false, false);
+                        rtpSession.AcceptRtpFromAny = true;
+                        MediaStreamTrack audioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
+                        rtpSession.addTrack(audioTrack);
+
+                        await userAgent.Answer(incomingCall, rtpSession);
+                        rtpSession.OnRtpPacketReceived += (ep, mediaType, rtpPacket) => ForwardMedia(mediaType, rtpPacket);
 
                         Log.LogInformation($"Answered incoming call from {sipRequest.Header.From.FriendlyDescription()} at {remoteEndPoint}.");
                     }
@@ -182,7 +185,7 @@ namespace SIPSorcery
 
             Log.LogInformation("Exiting...");
 
-            rtpAVSession?.Close("app exit");
+            rtpSession?.Close("app exit");
 
             if (userAgent != null)
             {
@@ -216,10 +219,6 @@ namespace SIPSorcery
             Log.LogDebug($"Web socket client connection from {context.UserEndPoint}.");
 
             _peerConnection = new RTCPeerConnection(null);
-            //AddressFamily.InterNetwork,
-            //DTLS_CERTIFICATE_FINGERPRINT,
-            //null,
-            //null);
 
             _peerConnection.OnReceiveReport += RtpSession_OnReceiveReport;
             _peerConnection.OnSendReport += RtpSession_OnSendReport;
@@ -272,26 +271,10 @@ namespace SIPSorcery
         /// <param name="rtpPacket">The RTP packet received on the SIP session.</param>
         private static void ForwardMedia(SDPMediaTypesEnum mediaType, RTPPacket rtpPacket)
         {
-            if (_peerConnection != null)
+            if (_peerConnection != null && mediaType == SDPMediaTypesEnum.audio)
             {
-                _peerConnection.SendMedia(mediaType, (uint)rtpPacket.Payload.Length, rtpPacket.Payload);
+                _peerConnection.SendAudio((uint)rtpPacket.Payload.Length, rtpPacket.Payload);
             }
-        }
-
-        /// <summary>
-        /// Wires up the dotnet logging infrastructure to STDOUT.
-        /// </summary>
-        private static void AddConsoleLogger()
-        {
-            // Logging configuration. Can be omitted if internal SIPSorcery debug and warning messages are not required.
-            var loggerFactory = new Microsoft.Extensions.Logging.LoggerFactory();
-            var loggerConfig = new LoggerConfiguration()
-                .Enrich.FromLogContext()
-                .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
-                .WriteTo.Console()
-                .CreateLogger();
-            loggerFactory.AddSerilog(loggerConfig);
-            SIPSorcery.Sys.Log.LoggerFactory = loggerFactory;
         }
 
         /// <summary>
@@ -365,6 +348,21 @@ namespace SIPSorcery
             {
                 Log.LogDebug($"Response retransmit {count} for response {resp.ShortDescription}, initial transmit {DateTime.Now.Subtract(tx.InitialTransmit).TotalSeconds.ToString("0.###")}s ago.");
             };
+        }
+
+        /// <summary>
+        ///  Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
+        /// </summary>
+        private static Microsoft.Extensions.Logging.ILogger AddConsoleLogger()
+        {
+            var serilogLogger = new LoggerConfiguration()
+                .Enrich.FromLogContext()
+                .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
+                .WriteTo.Console()
+                .CreateLogger();
+            var factory = new SerilogLoggerFactory(serilogLogger);
+            SIPSorcery.LogFactory.Set(factory);
+            return factory.CreateLogger<Program>();
         }
     }
 }

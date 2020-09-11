@@ -46,7 +46,7 @@ namespace SIPSorcery.SIP.App
         private bool m_callCancelled;                               // It's possible for the call to be cancelled before the INVITE has been sent. This could occur if a DNS lookup on the server takes a while.
         private bool m_hungupOnCancel;                              // Set to true if a call has been cancelled AND and then an OK response was received AND a BYE has been sent to hang it up. This variable is used to stop another BYE transaction being generated.
         private int m_serverAuthAttempts;                           // Used to determine if credentials for a server leg call fail.
-        private SIPNonInviteTransaction m_cancelTransaction;        // If the server call is cancelled this transaction contains the CANCEL in case it needs to be resent.
+        internal SIPNonInviteTransaction m_cancelTransaction;        // If the server call is cancelled this transaction contains the CANCEL in case it needs to be resent.
         private SIPEndPoint m_outboundProxy;                        // If the system needs to use an outbound proxy for every request this will be set and overrides any user supplied values.
         private SIPDialogue m_sipDialogue;
 
@@ -169,14 +169,14 @@ namespace SIPSorcery.SIP.App
                     routeSet.PushRoute(new SIPRoute(sipCallDescriptor.RouteSet, true));
                     Log_External(new SIPMonitorConsoleEvent(SIPMonitorServerTypesEnum.UserAgentClient, SIPMonitorEventTypesEnum.DialPlan, "Route set for call " + routeSet.ToString() + ".", Owner));
                     //lookupResult = m_sipTransport.GetURIEndPoint(routeSet.TopRoute.URI, false);
-                    lookupResult = await m_sipTransport.ResolveSIPUri(routeSet.TopRoute.URI).ConfigureAwait(false);
+                    lookupResult = await m_sipTransport.ResolveSIPUriAsync(routeSet.TopRoute.URI).ConfigureAwait(false);
                 }
                 else
                 {
                     Log_External(new SIPMonitorConsoleEvent(SIPMonitorServerTypesEnum.UserAgentClient, SIPMonitorEventTypesEnum.DialPlan, "SIPClientUserAgent attempting to resolve " + callURI.Host + ".", Owner));
                     //lookupResult = m_sipTransport.GetURIEndPoint(callURI, false);
                     DateTime lookupStartedAt = DateTime.Now;
-                    lookupResult = await m_sipTransport.ResolveSIPUri(callURI).ConfigureAwait(false);
+                    lookupResult = await m_sipTransport.ResolveSIPUriAsync(callURI).ConfigureAwait(false);
                     lookupDurationMilliseconds = DateTime.Now.Subtract(lookupStartedAt).TotalMilliseconds;
                 }
 
@@ -247,7 +247,6 @@ namespace SIPSorcery.SIP.App
                 }
 
                 SIPRequest inviteRequest = GetInviteRequest(m_sipCallDescriptor, m_sipCallDescriptor.BranchId, m_sipCallDescriptor.CallId, routeSet, content, sipCallDescriptor.ContentType);
-                inviteRequest.DnsResult = serverEndPoint;
 
                 // Now that we have a destination socket create a new UAC transaction for forwarded leg of the call.
                 m_serverTransaction = new UACInviteTransaction(m_sipTransport, inviteRequest, m_outboundProxy);

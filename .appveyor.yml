@@ -19,11 +19,10 @@ build:
   publish_nuget: true
   publish_nuget_symbols: true
   verbosity: quiet
-#test:
-#  categories:
-#    except:
-#    - transport
-#    - txintegration
+test:
+  assemblies:
+    only:
+      - '**\\SIPSorcery.UnitTests.dll'
 on_success:
   - ps: |
         if($env:APPVEYOR_REPO_BRANCH -eq "master" -and -Not $env:APPVEYOR_PULL_REQUEST_TITLE)
@@ -55,6 +54,22 @@ deploy:
     artifact: /.*\.nupkg/
     on:
       # branch: master                # release from master branch only
+      APPVEYOR_REPO_TAG: true       # deploy on tag push only
+  - provider: NuGet
+    server: https://nuget.pkg.github.com/sipsorcery/index.json
+    artifact: /.*(\.|\.s)nupkg/
+    username: sipsorcery
+    api_key:
+      secure: E58r+OknoQn8+bsPRT6l3U2K4kfOpDiGCo1C75LkVg+R/RBHpY//J8UCXEfVvyRB
+    on:
+      APPVEYOR_REPO_TAG: true       # deploy on tag push only
+  - provider: NuGet
+    server: https://nuget.pkg.github.com/sipsorcery/index.json
+    artifact: /.*(\.|\.s)nupkg/
+    username: sipsorcery
+    api_key:
+      secure: E58r+OknoQn8+bsPRT6l3U2K4kfOpDiGCo1C75LkVg+R/RBHpY//J8UCXEfVvyRB
+    on:
       APPVEYOR_REPO_TAG: true       # deploy on tag push only
 #  - provider: GitHub
 #    artifact: /.*\.nupkg/           # upload all NuGet packages to release assets

@@ -18,12 +18,15 @@ using System.Collections.Generic;
 using System.Net;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
-using NAudio.Wave;
+using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
+using Serilog.Extensions.Logging;
+using NAudio.Wave;
 using SIPSorcery.Media;
 using SIPSorcery.Net;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
+using SIPSorceryMedia.Abstractions.V1;
 
 namespace demo
 {
@@ -31,7 +34,7 @@ namespace demo
     {
         private static string DESTINATION = "time@sipsorcery.com";
 
-        private static Microsoft.Extensions.Logging.ILogger Log = SIPSorcery.Sys.Log.Logger;
+        private static Microsoft.Extensions.Logging.ILogger Log = NullLogger.Instance;
 
         private static int OUT_SAMPLE_RATE = 48000;
         private static int RTP_SAMPLE_RATE = SDPMediaFormatInfo.GetClockRate(SDPMediaFormatsEnum.PCMU);
@@ -44,7 +47,7 @@ namespace demo
         {
             Console.WriteLine("SIPSorcery Convert Audio");
 
-            AddConsoleLogger();
+            Log = AddConsoleLogger();
 
             //WaveFormatConversionStream converter = new WaveFormatConversionStream(_format_s16le48k, )
             _waveFile = new WaveFileWriter("output_s16le48k.mp3", _format_s16le48k);
@@ -60,8 +63,10 @@ namespace demo
             //EnableTraceLogs(sipTransport);
 
             var audioOptions = new AudioSourceOptions { AudioSource = AudioSourcesEnum.Silence };
-            var audioFormats = new List<SDPMediaFormatsEnum> { SDPMediaFormatsEnum.PCMU };
-            var rtpSession = new RtpAudioSession(audioOptions, audioFormats);
+            var audioCodecs = new List<AudioCodecsEnum> { AudioCodecsEnum.PCMU };
+            AudioExtrasSource audioExtrasSource = new AudioExtrasSource(new AudioEncoder(), audioOptions);
+            audioExtrasSource.RestrictCodecs(audioCodecs);
+            var rtpSession = new VoIPMediaSession(new MediaEndPoints { AudioSource = audioExtrasSource });
             rtpSession.OnRtpPacketReceived += RtpSession_OnRtpPacketReceived;
 
             // Place the call and wait for the result.
@@ -103,21 +108,6 @@ namespace demo
         }
 
         /// <summary>
-        ///  Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
-        /// </summary>
-        private static void AddConsoleLogger()
-        {
-            var loggerFactory = new Microsoft.Extensions.Logging.LoggerFactory();
-            var loggerConfig = new LoggerConfiguration()
-                .Enrich.FromLogContext()
-                .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
-                .WriteTo.Console()
-                .CreateLogger();
-            loggerFactory.AddSerilog(loggerConfig);
-            SIPSorcery.Sys.Log.LoggerFactory = loggerFactory;
-        }
-
-        /// <summary>
         /// Enable detailed SIP log messages.
         /// </summary>
         private static void EnableTraceLogs(SIPTransport sipTransport)
@@ -155,6 +145,21 @@ namespace demo
             {
                 Log.LogDebug($"Response retransmit {count} for response {resp.ShortDescription}, initial transmit {DateTime.Now.Subtract(tx.InitialTransmit).TotalSeconds.ToString("0.###")}s ago.");
             };
+        }
+
+        /// <summary>
+        /// Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
+        /// </summary>
+        private static Microsoft.Extensions.Logging.ILogger AddConsoleLogger()
+        {
+            var serilogLogger = new LoggerConfiguration()
+                .Enrich.FromLogContext()
+                .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
+                .WriteTo.Console()
+                .CreateLogger();
+            var factory = new SerilogLoggerFactory(serilogLogger);
+            SIPSorcery.LogFactory.Set(factory);
+            return factory.CreateLogger<Program>();
         }
     }
 }
