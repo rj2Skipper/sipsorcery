@@ -32,8 +32,8 @@ using SIPSorcery.Sys;
 
 namespace SIPSorcery.SIP
 {
-    public delegate Task<SIPEndPoint> ResolveSIPUriDelegateAsync(SIPURI uri, bool preferIPv6, CancellationToken ct);
-    public delegate SIPEndPoint ResolveSIPUriFromCacheDelegate(SIPURI uri, bool preferIPv6);
+    public delegate Task<SIPEndPoint> ResolveSIPUriDelegateAsync(SIPURI uri, bool? preferIPv6, CancellationToken ct);
+    public delegate SIPEndPoint ResolveSIPUriFromCacheDelegate(SIPURI uri, bool? preferIPv6);
 
     public class SIPTransport : IDisposable
     {

@@ -50,6 +50,8 @@ namespace SIPSorcery.SIP
     /// Observations from the field.
     /// - A DNS server has been observed to not respond at all to NAPTR or SRV record queries meaning lookups for
     ///   them will permanently time out.
+    /// 
+    /// rj2 2020-09-11: re-implement PreferIPv6NameResolution global flag
     /// </remarks>
     public class SIPDns
     {
@@ -58,6 +60,11 @@ namespace SIPSorcery.SIP
         public const int DNS_RETRIES_PER_SERVER = 1;
 
         private static readonly ILogger logger = Log.Logger;
+
+        /// <summary>
+        /// Set to true to prefer IPv6 lookups of hostnames. By default IPv4 lookups will be performed.
+        /// </summary>
+        public static bool PreferIPv6NameResolution = false;
 
         /// <summary>
         /// Don't use IN_ANY queries by default. These are useful if a DNS server supports them as they can
@@ -95,7 +102,7 @@ namespace SIPSorcery.SIP
             _lookupClient = new LookupClient(clientOptions);
         }
 
-        public static SIPEndPoint ResolveFromCache(SIPURI uri, bool preferIPv6)
+        public static SIPEndPoint ResolveFromCache(SIPURI uri, bool? preferIPv6 = null)
         {
             if (uri == null || String.IsNullOrWhiteSpace(uri.MAddrOrHostAddress))
             {
@@ -122,7 +129,7 @@ namespace SIPSorcery.SIP
                 if (uri.HostPort != null)
                 {
                     // Explicit port means no SRV lookup.
-                    return SIPLookupFromCache(uri, preferIPv6 ? QueryType.AAAA : QueryType.A, preferIPv6);
+                    return SIPLookupFromCache(uri, preferIPv6??PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A, preferIPv6);
                 }
                 else
                 {
@@ -139,7 +146,7 @@ namespace SIPSorcery.SIP
         /// <param name="preferIPv6">Whether the address lookup would prefer to have an IPv6 address
         /// returned.</param>
         /// <returns>A SIPEndPoint or null.</returns>
-        public static Task<SIPEndPoint> ResolveAsync(SIPURI uri, bool preferIPv6, CancellationToken ct)
+        public static Task<SIPEndPoint> ResolveAsync(SIPURI uri, bool? preferIPv6, CancellationToken ct)
         {
             if (uri == null || String.IsNullOrWhiteSpace(uri.MAddrOrHostAddress))
             {
@@ -167,7 +174,7 @@ namespace SIPSorcery.SIP
                     if (uri.HostPort != null)
                     {
                         // Explicit port means no SRV lookup.
-                        return SIPLookupAsync(uri, preferIPv6 ? QueryType.AAAA : QueryType.A, preferIPv6, ct);
+                        return SIPLookupAsync(uri, preferIPv6??PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A, preferIPv6, ct);
                     }
                     else
                     {
@@ -187,7 +194,7 @@ namespace SIPSorcery.SIP
         private static SIPEndPoint SIPLookupFromCache(
             SIPURI uri,
             QueryType startQuery,
-            bool preferIPv6)
+            bool? preferIPv6 = null)
         {
             CancellationTokenSource cts = new CancellationTokenSource();
             return SIPLookupAsync(uri, startQuery, preferIPv6, cts.Token).Result;
@@ -220,7 +227,7 @@ namespace SIPSorcery.SIP
             //                host = srvHost;
             //                port = srvPort != 0 ? srvPort : port;
             //            }
-            //            queryType = preferIPv6 ? QueryType.AAAA : QueryType.A;
+            //            queryType = preferIPv6 ?? PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A;
 
             //            break;
 
@@ -276,7 +283,7 @@ namespace SIPSorcery.SIP
         private static async Task<SIPEndPoint> SIPLookupAsync(
             SIPURI uri,
             QueryType startQuery,
-            bool preferIPv6,
+            bool? preferIPv6,
             CancellationToken ct)
         {
             SIPEndPoint result = null;
@@ -314,7 +321,7 @@ namespace SIPSorcery.SIP
                         {
                             logger.LogWarning($"SIPDNS exception on SRV lookup. {srvExcp.Message}.");
                         }
-                        queryType = preferIPv6 ? QueryType.AAAA : QueryType.A;
+                        queryType = preferIPv6??PreferIPv6NameResolution ? QueryType.AAAA : QueryType.A;
 
                         break;
 
@@ -448,9 +455,9 @@ namespace SIPSorcery.SIP
         /// <param name="uri">The SIP URI to lookup.</param>
         /// <param name="queryType">Whether the lookup should prefer an IPv6 result.</param>
         /// <returns>A SIP end point for the host or null if the URI cannot be resolved.</returns>
-        private static SIPEndPoint ResolveLocalHostname(SIPURI uri, bool preferIPv6)
+        private static SIPEndPoint ResolveLocalHostname(SIPURI uri, bool? preferIPv6 = null)
         {
-            AddressFamily family = preferIPv6 ? AddressFamily.InterNetworkV6 :
+            AddressFamily family = preferIPv6??PreferIPv6NameResolution ? AddressFamily.InterNetworkV6 :
                        AddressFamily.InterNetwork;
 
             if (!ushort.TryParse(uri.HostPort, out var uriPort))
