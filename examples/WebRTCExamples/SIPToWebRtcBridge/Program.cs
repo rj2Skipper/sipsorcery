@@ -28,20 +28,18 @@
 
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
-using SIPSorcery.Media;
+using Serilog.Extensions.Logging;
 using SIPSorcery.Net;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
-using SIPSorceryMedia;
 using WebSocketSharp;
 using WebSocketSharp.Net.WebSockets;
 using WebSocketSharp.Server;
@@ -53,7 +51,7 @@ namespace SIPSorcery
         public RTCPeerConnection PeerConnection;
 
         public event Func<WebSocketContext, Task<RTCPeerConnection>> WebSocketOpened;
-        public event Func<RTCPeerConnection, string, Task> SDPAnswerReceived;
+        public event Action<RTCPeerConnection, string> SDPAnswerReceived;
 
         public SDPExchange()
         { }
@@ -75,12 +73,9 @@ namespace SIPSorcery
     {
         private static int SIP_LISTEN_PORT = 5060;
         private const string WEBSOCKET_CERTIFICATE_PATH = "certs/localhost.pfx";
-        private const string DTLS_CERTIFICATE_PATH = "certs/localhost.pem";
-        private const string DTLS_KEY_PATH = "certs/localhost_key.pem";
-        private const string DTLS_CERTIFICATE_FINGERPRINT = "sha-256 C6:ED:8C:9D:06:50:77:23:0A:4A:D8:42:68:29:D0:70:2F:BB:C7:72:EC:98:5C:62:07:1B:0C:5D:CB:CE:BE:CD";
         private const int WEBSOCKET_PORT = 8081;
 
-        private static Microsoft.Extensions.Logging.ILogger Log = SIPSorcery.Sys.Log.Logger;
+        private static Microsoft.Extensions.Logging.ILogger Log = NullLogger.Instance;
 
         private static WebSocketServer _webSocketServer;
         private static RTCPeerConnection _peerConnection;
@@ -96,7 +91,7 @@ namespace SIPSorcery
             // Plumbing code to facilitate a graceful exit.
             CancellationTokenSource exitCts = new CancellationTokenSource(); // Cancellation token to stop the SIP transport and RTP stream.
 
-            AddConsoleLogger();
+            Log = AddConsoleLogger();
 
             // Start web socket.
             Console.WriteLine("Starting web socket server...");
@@ -119,7 +114,7 @@ namespace SIPSorcery
 
             //EnableTraceLogs(sipTransport);
 
-            RtpAVSession rtpAVSession = null;
+            RTPSession rtpSession = null;
 
             // Create a SIP user agent to receive a call from a remote SIP client.
             // Wire up event handlers for the different stages of the call.
@@ -157,9 +152,13 @@ namespace SIPSorcery
                         Log.LogInformation($"Incoming call request from {remoteEndPoint}: {sipRequest.StatusLine}.");
                         var incomingCall = userAgent.AcceptCall(sipRequest);
 
-                        rtpAVSession = new RtpAVSession(new AudioOptions { AudioSource = AudioSourcesEnum.CaptureDevice }, null);
-                        await userAgent.Answer(incomingCall, rtpAVSession);
-                        rtpAVSession.OnRtpPacketReceived += (mediaType, rtpPacket) => ForwardMedia(mediaType, rtpPacket);
+                        rtpSession = new RTPSession(false, false, false);
+                        rtpSession.AcceptRtpFromAny = true;
+                        MediaStreamTrack audioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
+                        rtpSession.addTrack(audioTrack);
+
+                        await userAgent.Answer(incomingCall, rtpSession);
+                        rtpSession.OnRtpPacketReceived += (ep, mediaType, rtpPacket) => ForwardMedia(mediaType, rtpPacket);
 
                         Log.LogInformation($"Answered incoming call from {sipRequest.Header.From.FriendlyDescription()} at {remoteEndPoint}.");
                     }
@@ -186,7 +185,7 @@ namespace SIPSorcery
 
             Log.LogInformation("Exiting...");
 
-            rtpAVSession?.Close("app exit");
+            rtpSession?.Close("app exit");
 
             if (userAgent != null)
             {
@@ -200,8 +199,6 @@ namespace SIPSorcery
                 Log.LogInformation("Waiting 1s for call to clean up...");
                 Task.Delay(1000).Wait();
             }
-
-            SIPSorcery.Net.DNSManager.Stop();
 
             if (sipTransport != null)
             {
@@ -222,10 +219,6 @@ namespace SIPSorcery
             Log.LogDebug($"Web socket client connection from {context.UserEndPoint}.");
 
             _peerConnection = new RTCPeerConnection(null);
-            //AddressFamily.InterNetwork,
-            //DTLS_CERTIFICATE_FINGERPRINT,
-            //null,
-            //null);
 
             _peerConnection.OnReceiveReport += RtpSession_OnReceiveReport;
             _peerConnection.OnSendReport += RtpSession_OnSendReport;
@@ -234,41 +227,33 @@ namespace SIPSorcery
 
             _peerConnection.onconnectionstatechange += (state) =>
             {
+                Log.LogDebug($"WebRTC peer connection state changed to {state}.");
+
                 if (state == RTCPeerConnectionState.closed)
                 {
-                    Log.LogDebug($"RTC peer connection closed.");
                     _peerConnection.OnReceiveReport -= RtpSession_OnReceiveReport;
                     _peerConnection.OnSendReport -= RtpSession_OnSendReport;
                 }
             };
 
-            MediaStreamTrack audioTrack = new MediaStreamTrack(null, SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
+            MediaStreamTrack audioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
             _peerConnection.addTrack(audioTrack);
 
-            var offerInit = await _peerConnection.createOffer(null);
+            var offerInit = _peerConnection.createOffer(null);
             await _peerConnection.setLocalDescription(offerInit);
 
             context.WebSocket.Send(offerInit.sdp);
 
-            if (DoDtlsHandshake(_peerConnection))
-            {
-                Log.LogInformation("DTLS handshake completed successfully.");
-            }
-            else
-            {
-                _peerConnection.Close("dtls handshake failed.");
-            }
-
             return _peerConnection;
         }
 
-        private static async Task SDPAnswerReceived(RTCPeerConnection peerConnection, string sdpAnswer)
+        private static void SDPAnswerReceived(RTCPeerConnection peerConnection, string sdpAnswer)
         {
             try
             {
                 Log.LogDebug("Answer SDP: " + sdpAnswer);
 
-                await peerConnection.setRemoteDescription(new RTCSessionDescriptionInit { type = RTCSdpType.answer, sdp = sdpAnswer });
+                peerConnection.setRemoteDescription(new RTCSessionDescriptionInit { type = RTCSdpType.answer, sdp = sdpAnswer });
 
                 // Forward audio samples from the SIP session to the WebRTC session (one way).
                 //OnMediaFromSIPSampleReady += webRtcSession.SendMedia;
@@ -280,83 +265,16 @@ namespace SIPSorcery
         }
 
         /// <summary>
-        /// Hands the socket handle to the DTLS context and waits for the handshake to complete.
-        /// </summary>
-        /// <param name="webRtcSession">The WebRTC session to perform the DTLS handshake on.</param>
-        private static bool DoDtlsHandshake(RTCPeerConnection peerConnection)
-        {
-            Log.LogDebug("DoDtlsHandshake started.");
-
-            if (!File.Exists(DTLS_CERTIFICATE_PATH))
-            {
-                throw new ApplicationException($"The DTLS certificate file could not be found at {DTLS_CERTIFICATE_PATH}.");
-            }
-            else if (!File.Exists(DTLS_KEY_PATH))
-            {
-                throw new ApplicationException($"The DTLS key file could not be found at {DTLS_KEY_PATH}.");
-            }
-
-            var dtls = new DtlsHandshake(DTLS_CERTIFICATE_PATH, DTLS_KEY_PATH);
-            peerConnection.onconnectionstatechange += (state) =>
-            {
-                if (state == RTCPeerConnectionState.closed)
-                {
-                    dtls.Shutdown();
-                }
-            };
-
-            int res = dtls.DoHandshakeAsServer((ulong)peerConnection.GetRtpChannel(SDPMediaTypesEnum.audio).RtpSocket.Handle);
-
-            Log.LogDebug("DtlsContext initialisation result=" + res);
-
-            if (dtls.IsHandshakeComplete())
-            {
-                Log.LogDebug("DTLS negotiation complete.");
-
-                var srtpSendContext = new Srtp(dtls, false);
-                var srtpReceiveContext = new Srtp(dtls, true);
-
-                peerConnection.SetSecurityContext(
-                    srtpSendContext.ProtectRTP,
-                    srtpReceiveContext.UnprotectRTP,
-                    srtpSendContext.ProtectRTCP,
-                    srtpReceiveContext.UnprotectRTCP);
-
-                return true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        /// <summary>
         /// Forwards media from the SIP session to the WebRTC session.
         /// </summary>
         /// <param name="mediaType">The type of media.</param>
         /// <param name="rtpPacket">The RTP packet received on the SIP session.</param>
         private static void ForwardMedia(SDPMediaTypesEnum mediaType, RTPPacket rtpPacket)
         {
-            if (_peerConnection != null)
+            if (_peerConnection != null && mediaType == SDPMediaTypesEnum.audio)
             {
-                _peerConnection.SendMedia(mediaType, (uint)rtpPacket.Payload.Length, rtpPacket.Payload);
+                _peerConnection.SendAudio((uint)rtpPacket.Payload.Length, rtpPacket.Payload);
             }
-        }
-
-        /// <summary>
-        /// Wires up the dotnet logging infrastructure to STDOUT.
-        /// </summary>
-        private static void AddConsoleLogger()
-        {
-            // Logging configuration. Can be omitted if internal SIPSorcery debug and warning messages are not required.
-            var loggerFactory = new Microsoft.Extensions.Logging.LoggerFactory();
-            var loggerConfig = new LoggerConfiguration()
-                .Enrich.FromLogContext()
-                .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
-                .WriteTo.Console()
-                .CreateLogger();
-            loggerFactory.AddSerilog(loggerConfig);
-            SIPSorcery.Sys.Log.LoggerFactory = loggerFactory;
         }
 
         /// <summary>
@@ -379,7 +297,7 @@ namespace SIPSorcery
         /// <summary>
         /// Diagnostic handler to print out our RTCP reports from the remote WebRTC peer.
         /// </summary>
-        private static void RtpSession_OnReceiveReport(SDPMediaTypesEnum mediaType, RTCPCompoundPacket recvRtcpReport)
+        private static void RtpSession_OnReceiveReport(IPEndPoint remoteEndPoint, SDPMediaTypesEnum mediaType, RTCPCompoundPacket recvRtcpReport)
         {
             var rr = recvRtcpReport.ReceiverReport.ReceptionReports.FirstOrDefault();
             if (rr != null)
@@ -430,6 +348,21 @@ namespace SIPSorcery
             {
                 Log.LogDebug($"Response retransmit {count} for response {resp.ShortDescription}, initial transmit {DateTime.Now.Subtract(tx.InitialTransmit).TotalSeconds.ToString("0.###")}s ago.");
             };
+        }
+
+        /// <summary>
+        ///  Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
+        /// </summary>
+        private static Microsoft.Extensions.Logging.ILogger AddConsoleLogger()
+        {
+            var serilogLogger = new LoggerConfiguration()
+                .Enrich.FromLogContext()
+                .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
+                .WriteTo.Console()
+                .CreateLogger();
+            var factory = new SerilogLoggerFactory(serilogLogger);
+            SIPSorcery.LogFactory.Set(factory);
+            return factory.CreateLogger<Program>();
         }
     }
 }

@@ -17,24 +17,25 @@
 //-----------------------------------------------------------------------------
 
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
+using Serilog.Extensions.Logging;
 using SIPSorcery.Media;
 using SIPSorcery.Net;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
-using SIPSorcery.Sys;
+using SIPSorceryMedia.Windows;
 
-namespace SIPSorcery
+namespace demo
 {
     class Program
     {
         private static readonly string DEFAULT_DESTINATION_SIP_URI = "sip:time@sipsorcery.com";  // Talking Clock.
 
-        private static Microsoft.Extensions.Logging.ILogger Log = SIPSorcery.Sys.Log.Logger;
+        private static Microsoft.Extensions.Logging.ILogger Log = NullLogger.Instance;
 
         static void Main(string[] args)
         {
@@ -46,7 +47,7 @@ namespace SIPSorcery
             bool isCallHungup = false;
             bool hasCallFailed = false;
 
-            AddConsoleLogger();
+            Log = AddConsoleLogger();
 
             SIPURI callUri = SIPURI.ParseSIPURI(DEFAULT_DESTINATION_SIP_URI);
             if (args != null && args.Length > 0)
@@ -62,49 +63,37 @@ namespace SIPSorcery
             var sipTransport = new SIPTransport();
             EnableTraceLogs(sipTransport);
 
-            // Get the IP address the RTP will be sent from. While we can listen on IPAddress.Any | IPv6Any
-            // we can't put 0.0.0.0 or [::0] in the SDP or the callee will treat our RTP stream as inactive.
-            var lookupResult = SIPDNSManager.ResolveSIPService(callUri, false);
-            Log.LogDebug($"DNS lookup result for {callUri}: {lookupResult?.GetSIPEndPoint()}.");
-            var dstAddress = lookupResult.GetSIPEndPoint().Address;
-            var localOfferAddress = NetServices.GetLocalAddressForRemote(dstAddress);
+            var audioSession = new WindowsAudioEndPoint(new AudioEncoder());
+            var rtpSession = new VoIPMediaSession(audioSession.ToMediaEndPoints());
 
-            // Initialise an RTP session to receive the RTP packets from the remote SIP server.
-            var audioOptions = new AudioOptions
-            {
-                AudioSource = AudioSourcesEnum.CaptureDevice,
-                AudioCodecs = new List<SDPMediaFormatsEnum> { SDPMediaFormatsEnum.PCMA, SDPMediaFormatsEnum.PCMU },
-                OutputDeviceIndex = AudioOptions.DEFAULT_OUTPUTDEVICE_INDEX
-            };
-            var rtpSession = new RtpAVSession(audioOptions, null);
-            var offerSDP = rtpSession.CreateOffer(localOfferAddress);
+            var offerSDP = rtpSession.CreateOffer(null);
 
             // Create a client user agent to place a call to a remote SIP server along with event handlers for the different stages of the call.
             var uac = new SIPClientUserAgent(sipTransport);
             uac.CallTrying += (uac, resp) => Log.LogInformation($"{uac.CallDescriptor.To} Trying: {resp.StatusCode} {resp.ReasonPhrase}.");
-            uac.CallRinging += (uac, resp) =>
+            uac.CallRinging += async (uac, resp) =>
             {
                 Log.LogInformation($"{uac.CallDescriptor.To} Ringing: {resp.StatusCode} {resp.ReasonPhrase}.");
                 if (resp.Status == SIPResponseStatusCodesEnum.SessionProgress)
                 {
-                    rtpSession.Start();
+                    await rtpSession.Start();
                 }
             };
             uac.CallFailed += (uac, err, resp) =>
             {
-                Log.LogWarning($"{uac.CallDescriptor.To} Failed: {err}");
+                Log.LogWarning($"Call attempt to {uac.CallDescriptor.To} Failed: {err}");
                 hasCallFailed = true;
             };
-            uac.CallAnswered += (iuac, resp) =>
+            uac.CallAnswered += async (iuac, resp) =>
             {
                 if (resp.Status == SIPResponseStatusCodesEnum.Ok)
                 {
                     Log.LogInformation($"{uac.CallDescriptor.To} Answered: {resp.StatusCode} {resp.ReasonPhrase}.");
 
-                    var result = rtpSession.SetRemoteDescription(SDP.ParseSDPDescription(resp.Body));
-                    if(result == SetDescriptionResultEnum.OK)
+                    var result = rtpSession.SetRemoteDescription(SdpType.answer, SDP.ParseSDPDescription(resp.Body));
+                    if (result == SetDescriptionResultEnum.OK)
                     {
-                        rtpSession.Start();
+                        await rtpSession.Start();
                     }
                     else
                     {
@@ -148,7 +137,7 @@ namespace SIPSorcery
                 offerSDP.ToString(),
                 null);
 
-            uac.Call(callDescriptor);
+            uac.Call(callDescriptor, null);
             uac.ServerTransaction.TransactionTraceMessage += (tx, msg) => Log.LogInformation($"UAC tx trace message. {msg}");
 
             // Ctrl-c will gracefully exit the call at any point.
@@ -183,28 +172,11 @@ namespace SIPSorcery
                 Task.Delay(1000).Wait();
             }
 
-            SIPSorcery.Net.DNSManager.Stop();
-
             if (sipTransport != null)
             {
                 Log.LogInformation("Shutting down SIP transport...");
                 sipTransport.Shutdown();
             }
-        }
-
-        /// <summary>
-        ///  Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
-        /// </summary>
-        private static void AddConsoleLogger()
-        {
-            var loggerFactory = new Microsoft.Extensions.Logging.LoggerFactory();
-            var loggerConfig = new LoggerConfiguration()
-                .Enrich.FromLogContext()
-                .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
-                .WriteTo.Console()
-                .CreateLogger();
-            loggerFactory.AddSerilog(loggerConfig);
-            SIPSorcery.Sys.Log.LoggerFactory = loggerFactory;
         }
 
         /// <summary>
@@ -245,6 +217,21 @@ namespace SIPSorcery
             {
                 Log.LogDebug($"Response retransmit {count} for response {resp.ShortDescription}, initial transmit {DateTime.Now.Subtract(tx.InitialTransmit).TotalSeconds.ToString("0.###")}s ago.");
             };
+        }
+
+        /// <summary>
+        /// Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
+        /// </summary>
+        private static Microsoft.Extensions.Logging.ILogger AddConsoleLogger()
+        {
+            var serilogLogger = new LoggerConfiguration()
+                .Enrich.FromLogContext()
+                .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
+                .WriteTo.Console()
+                .CreateLogger();
+            var factory = new SerilogLoggerFactory(serilogLogger);
+            SIPSorcery.LogFactory.Set(factory);
+            return factory.CreateLogger<Program>();
         }
     }
 }

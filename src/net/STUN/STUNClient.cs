@@ -4,10 +4,10 @@
 // Description: 
 //
 // Author(s):
-// Aaron Clauson
+// Aaron Clauson (aaron@sipsorcery.com)
 //
 // History:
-// ??	Aaron Clauson	Created (aaron@sipsorcery.com), SIP Sorcery PTY LTD, Hobart, Australia (www.sipsorcery.com).
+// ??	Aaron Clauson	Created, Hobart, Australia.
 //
 // License: 
 // BSD 3-Clause "New" or "Revised" License, see included LICENSE.md file.
@@ -56,7 +56,7 @@ namespace SIPSorcery.Net
                 using (UdpClient udpClient = new UdpClient(stunServer, port))
                 {
                     STUNMessage initMessage = new STUNMessage(STUNMessageTypesEnum.BindingRequest);
-                    byte[] stunMessageBytes = initMessage.ToByteBuffer();
+                    byte[] stunMessageBytes = initMessage.ToByteBuffer(null, false);
                     udpClient.Send(stunMessageBytes, stunMessageBytes.Length);
 
                     IPEndPoint publicEndPoint = null;
@@ -102,7 +102,7 @@ namespace SIPSorcery.Net
                     }
                     else
                     {
-                        logger.LogWarning("STUNClient server response timedout after " + STUN_SERVER_RESPONSE_TIMEOUT + "s.");
+                        logger.LogWarning("STUNClient server response timed out after " + STUN_SERVER_RESPONSE_TIMEOUT + "s.");
                         return null;
                     }
                 }

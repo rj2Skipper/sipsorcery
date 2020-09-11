@@ -45,7 +45,7 @@ namespace WebRTCAspNetMvc.Controllers
 
         [HttpPost]
         [Route("setanswer")]
-        public async Task<IActionResult> SetAnswer(string id, [FromBody] RTCSessionDescriptionInit answer)
+        public IActionResult SetAnswer(string id, [FromBody] RTCSessionDescriptionInit answer)
         {
             _logger.LogDebug($"SetAnswer {id} {answer?.type} {answer?.sdp}.");
 
@@ -53,18 +53,18 @@ namespace WebRTCAspNetMvc.Controllers
             {
                 return BadRequest("The id cannot be empty in SetAnswer.");
             }
-            else if(string.IsNullOrWhiteSpace(answer?.sdp))
+            else if (string.IsNullOrWhiteSpace(answer?.sdp))
             {
                 return BadRequest("The SDP answer cannot be empty in SetAnswer.");
             }
 
-            await _webRTCServer.SetRemoteDescription(id, answer);
+            _webRTCServer.SetRemoteDescription(id, answer);
             return Ok();
         }
 
         [HttpPost]
         [Route("addicecandidate")]
-        public async Task<IActionResult> AddIceCandidate(string id, [FromBody] RTCIceCandidateInit iceCandidate)
+        public IActionResult AddIceCandidate(string id, [FromBody] RTCIceCandidateInit iceCandidate)
         {
             _logger.LogDebug($"SetIceCandidate {id} {iceCandidate?.candidate}.");
 
@@ -77,15 +77,7 @@ namespace WebRTCAspNetMvc.Controllers
                 return BadRequest("The candidate field cannot be empty in AddIceCandidate.");
             }
 
-            // TODO: Handle .local addresses.
-            if (iceCandidate.candidate.Contains(".local"))
-            {
-                _logger.LogWarning("ICE candidates with .local addresses are currently not supported, coming soon.");
-            }
-            else
-            {
-                await _webRTCServer.AddIceCandidate(id, iceCandidate);
-            }
+            _webRTCServer.AddIceCandidate(id, iceCandidate);
 
             return Ok();
         }

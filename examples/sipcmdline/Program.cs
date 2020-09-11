@@ -59,32 +59,30 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Net;
 using System.Net.Sockets;
-using System.Security.Cryptography.X509Certificates;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using CommandLine;
 using CommandLine.Text;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
+using Serilog.Extensions.Logging;
 using Serilog.Sinks.SystemConsole.Themes;
 using SIPSorcery.Media;
-using SIPSorcery.Net;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
 using SIPSorcery.Sys;
+using SIPSorceryMedia.Abstractions.V1;
 
 namespace SIPSorcery
 {
     class Program
     {
-        private const int DEFAULT_SIP_CLIENT_PORT = 0;
-        private const int DEFAULT_SIPS_CLIENT_PORT = 0;
         private const int DEFAULT_RESPONSE_TIMEOUT_SECONDS = 5;
 
-        private static Microsoft.Extensions.Logging.ILogger logger;
+        private static Microsoft.Extensions.Logging.ILogger logger = NullLogger.Instance;
 
         public enum Scenarios
         {
@@ -130,15 +128,14 @@ namespace SIPSorcery
 
         static void Main(string[] args)
         {
-            var loggerFactory = new Microsoft.Extensions.Logging.LoggerFactory();
-            var loggerConfig = new LoggerConfiguration()
-                //.Enrich.FromLogContext()
+            var seriLogger = new LoggerConfiguration()
+                .Enrich.FromLogContext()
                 .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
                 .WriteTo.Console(theme: AnsiConsoleTheme.Code)
                 .CreateLogger();
-            loggerFactory.AddSerilog(loggerConfig);
-            SIPSorcery.Sys.Log.LoggerFactory = loggerFactory;
-            logger = SIPSorcery.Sys.Log.Logger;
+            var factory = new SerilogLoggerFactory(seriLogger);
+            SIPSorcery.LogFactory.Set(factory);
+            logger = factory.CreateLogger<Program>();
 
             var result = Parser.Default.ParseArguments<Options>(args)
                 .WithParsed<Options>(opts => RunCommand(opts).Wait());
@@ -199,8 +196,6 @@ namespace SIPSorcery
 
                 sw.Stop();
 
-                DNSManager.Stop();
-
                 // Give the transport half a second to shutdown (puts the log messages in a better sequence).
                 await Task.Delay(500);
 
@@ -226,37 +221,9 @@ namespace SIPSorcery
             {
                 DateTime startTime = DateTime.Now;
 
-                (var dstEp, var dstUri) = ParseDestination(options.Destination);
+               var dstUri = ParseDestination(options.Destination);
 
-                logger.LogDebug($"Destination IP end point {dstEp} and SIP URI {dstUri}");
-
-                IPAddress localAddress = (dstEp.Address.AddressFamily == AddressFamily.InterNetworkV6) ? IPAddress.IPv6Any : IPAddress.Any;
-                SIPChannel sipChannel = null;
-
-                switch (dstEp.Protocol)
-                {
-                    case SIPProtocolsEnum.tcp:
-                        sipChannel = new SIPTCPChannel(new IPEndPoint(localAddress, DEFAULT_SIP_CLIENT_PORT));
-                        (sipChannel as SIPTCPChannel).DisableLocalTCPSocketsCheck = true; // Allow sends to listeners on this host.
-                        break;
-                    case SIPProtocolsEnum.tls:
-                        var certificate = new X509Certificate2(@"localhost.pfx", "");
-                        sipChannel = new SIPTLSChannel(certificate, new IPEndPoint(localAddress, DEFAULT_SIPS_CLIENT_PORT));
-                        break;
-                    case SIPProtocolsEnum.udp:
-                        sipChannel = new SIPUDPChannel(new IPEndPoint(localAddress, DEFAULT_SIP_CLIENT_PORT));
-                        break;
-                    case SIPProtocolsEnum.ws:
-                        sipChannel = new SIPClientWebSocketChannel();
-                        break;
-                    case SIPProtocolsEnum.wss:
-                        sipChannel = new SIPClientWebSocketChannel();
-                        break;
-                    default:
-                        throw new ApplicationException($"Don't know how to create SIP channel for transport {dstEp.Protocol}.");
-                }
-
-                sipTransport.AddSIPChannel(sipChannel);
+                logger.LogDebug($"Destination SIP URI {dstUri}");
 
                 Task<bool> task = null;
 
@@ -278,12 +245,12 @@ namespace SIPSorcery
 
                 if (!task.IsCompleted)
                 {
-                    logger.LogWarning($"=> Request to {dstEp} did not get a response on task {taskNumber} after {duration.TotalMilliseconds.ToString("0")}ms.");
+                    logger.LogWarning($"=> Request to {dstUri} did not get a response on task {taskNumber} after {duration.TotalMilliseconds.ToString("0")}ms.");
                     failed = true;
                 }
                 else if (!task.Result)
                 {
-                    logger.LogWarning($"=> Request to {dstEp} did not get the expected response on task {taskNumber} after {duration.TotalMilliseconds.ToString("0")}ms.");
+                    logger.LogWarning($"=> Request to {dstUri} did not get the expected response on task {taskNumber} after {duration.TotalMilliseconds.ToString("0")}ms.");
                     failed = true;
                 }
                 else
@@ -309,11 +276,10 @@ namespace SIPSorcery
         /// </summary>
         /// <param name="dstn">The destination string to parse.</param>
         /// <returns>The SIPEndPoint and SIPURI parsed from the destination string.</returns>
-        private static (SIPEndPoint, SIPURI) ParseDestination(string dst)
+        private static SIPURI ParseDestination(string dst)
         {
-            var dstEp = SIPEndPoint.ParseSIPEndPoint(dst);
-
             SIPURI dstUri = null;
+
             // Don't attempt a SIP URI parse for serialised SIPEndPoints.
             if (Regex.IsMatch(dst, "^(udp|tcp|tls|ws|wss)") == false && SIPURI.TryParse(dst, out var argUri))
             {
@@ -321,21 +287,11 @@ namespace SIPSorcery
             }
             else
             {
-                dstUri = new SIPURI(dstEp.Scheme, dstEp);
+                var dstEp = SIPEndPoint.ParseSIPEndPoint(dst);
+                dstUri = new SIPURI(SIPSchemesEnum.sip, dstEp);
             }
 
-            if (dstEp == null)
-            {
-                logger.LogDebug($"Could not extract IP end point from destination host of {dstUri.Host}.");
-                var result = SIPDNSManager.ResolveSIPService(dstUri, false);
-                if (result != null)
-                {
-                    logger.LogDebug($"Resolved SIP URI {dstUri} to {result.GetSIPEndPoint()}.");
-                    dstEp = result.GetSIPEndPoint();
-                }
-            }
-
-            return (dstEp, dstUri);
+            return dstUri;
         }
 
         /// <summary>
@@ -383,7 +339,7 @@ namespace SIPSorcery
                     return Task.FromResult(0);
                 };
 
-                SocketError sendResult = await sipTransport.SendRequestAsync(optionsRequest);
+                SocketError sendResult = await sipTransport.SendRequestAsync(optionsRequest, true);
                 if (sendResult != SocketError.Success)
                 {
                     logger.LogWarning($"Attempt to send request failed with {sendResult}.");
@@ -436,9 +392,11 @@ namespace SIPSorcery
                 ua.ClientCallAnswered += (uac, resp) => logger.LogInformation($"{uac.CallDescriptor.To} Answered: {resp.StatusCode} {resp.ReasonPhrase}.");
 
                 var audioOptions = new AudioSourceOptions { AudioSource = AudioSourcesEnum.Silence };
-                var rtpAudioSession = new RtpAudioSession(audioOptions, new List<SDPMediaFormatsEnum> { SDPMediaFormatsEnum.PCMU });
+                var audioExtrasSource = new AudioExtrasSource(new AudioEncoder(), audioOptions);
+                audioExtrasSource.RestrictCodecs(new List<AudioCodecsEnum> { AudioCodecsEnum.PCMU });
+                var voipMediaSession = new VoIPMediaSession(new MediaEndPoints { AudioSource = audioExtrasSource });
 
-                var result = await ua.Call(dst.ToString(), null, null, rtpAudioSession);
+                var result = await ua.Call(dst.ToString(), null, null, voipMediaSession);
 
                 ua.Hangup();
 

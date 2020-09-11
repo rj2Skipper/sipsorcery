@@ -19,12 +19,13 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NAudio.Codecs;
 using Serilog;
+using Serilog.Extensions.Logging;
 using SIPSorcery.Net;
 using SIPSorceryMedia;
 using WebSocketSharp;
@@ -38,14 +39,14 @@ namespace WebRTCServer
         public RTCPeerConnection PeerConnection;
 
         public event Func<WebSocketContext, Task<RTCPeerConnection>> WebSocketOpened;
-        public event Func<RTCPeerConnection, string, Task> OnMessageReceived;
+        public event Action<RTCPeerConnection, string> OnMessageReceived;
 
         public SDPExchange()
         { }
 
-        protected override async void OnMessage(MessageEventArgs e)
+        protected override void OnMessage(MessageEventArgs e)
         {
-            await OnMessageReceived(PeerConnection, e.Data);
+            OnMessageReceived(PeerConnection, e.Data);
         }
 
         protected override async void OnOpen()
@@ -66,14 +67,10 @@ namespace WebRTCServer
         private static string MP4_FILE_PATH = "media/big_buck_bunny.mp4";
         private const int VP8_TIMESTAMP_SPACING = 3000;
         private const int VP8_PAYLOAD_TYPE_ID = 100;
-        private const string WEBSOCKET_CERTIFICATE_PATH = "certs/localhost.pfx";
-        private const string DTLS_CERTIFICATE_PATH = "certs/localhost.pem";
-        private const string DTLS_KEY_PATH = "certs/localhost_key.pem";
-        private const string DTLS_CERTIFICATE_FINGERPRINT = "sha-256 C6:ED:8C:9D:06:50:77:23:0A:4A:D8:42:68:29:D0:70:2F:BB:C7:72:EC:98:5C:62:07:1B:0C:5D:CB:CE:BE:CD";
+        private const string LOCALHOST_CERTIFICATE_PATH = "certs/localhost.pfx";
         private const int WEBSOCKET_PORT = 8081;
-        private const int TEST_DTLS_HANDSHAKE_TIMEOUT = 10000;
 
-        private static Microsoft.Extensions.Logging.ILogger logger = SIPSorcery.Sys.Log.Logger;
+        private static Microsoft.Extensions.Logging.ILogger logger = NullLogger.Instance;
 
         private static WebSocketServer _webSocketServer;
         private static MediaSource _mediaSource;
@@ -82,8 +79,9 @@ namespace WebRTCServer
         private static uint _vp8Timestamp;
         private static uint _mulawTimestamp;
 
-        private delegate void MediaSampleReadyDelegate(SDPMediaTypesEnum mediaType, uint timestamp, byte[] sample);
-        private static event MediaSampleReadyDelegate OnMediaSampleReady;
+        private delegate void MediaSampleReadyDelegate(uint timestamp, byte[] sample);
+        private static event MediaSampleReadyDelegate OnAudioSampleReady;
+        private static event MediaSampleReadyDelegate OnVideoSampleReady;
 
         static void Main()
         {
@@ -94,38 +92,33 @@ namespace WebRTCServer
             CancellationTokenSource exitCts = new CancellationTokenSource(); // Cancellation token to stop the SIP transport and RTP stream.
             ManualResetEvent exitMre = new ManualResetEvent(false);
 
-            AddConsoleLogger();
+            logger = AddConsoleLogger();
 
             if (!File.Exists(MP4_FILE_PATH))
             {
                 throw new ApplicationException($"The media file at does not exist at {MP4_FILE_PATH}.");
             }
-            else if (!File.Exists(DTLS_CERTIFICATE_PATH))
+            else if (!File.Exists(LOCALHOST_CERTIFICATE_PATH))
             {
-                throw new ApplicationException($"The DTLS certificate file could not be found at {DTLS_CERTIFICATE_PATH}.");
-            }
-            else if (!File.Exists(DTLS_KEY_PATH))
-            {
-                throw new ApplicationException($"The DTLS key file could not be found at {DTLS_KEY_PATH}.");
+                throw new ApplicationException($"The localhost certificate file for the web socket server could not be found at {LOCALHOST_CERTIFICATE_PATH }.");
             }
 
-            // Initialise OpenSSL & libsrtp, saves a couple of seconds for the first client connection.
-            Console.WriteLine("Initialising OpenSSL and libsrtp...");
-            DtlsHandshake.InitialiseOpenSSL();
-            Srtp.InitialiseLibSrtp();
-
-            Task.Run(DoDtlsHandshakeLoopbackTest).Wait();
-
-            Console.WriteLine("Test DTLS handshake complete.");
-
+            // The MediaSource class is a prototype class that wraps some basic Windows Media Foundation API's.
+            // It has not been extensively tested and your mileage may vary with different file sources and
+            // webcams.
             _mediaSource = new MediaSource();
+
+            // To use the mp4 file media source uncomment the line below:
             _mediaSource.Init(MP4_FILE_PATH, true);
-            //_mediaSource.Init(0, 0, VideoSubTypesEnum.I420, 640, 480);
+
+            // To use a webcam as the media source uncomment the line below and adjust the
+            // pixel format and dimensions to a mode supported by your webcam.
+            //_mediaSource.Init(0, 0, VideoSubTypesEnum.YUY2, 640, 480);
 
             // Start web socket.
             Console.WriteLine("Starting web socket server...");
             _webSocketServer = new WebSocketServer(IPAddress.Any, WEBSOCKET_PORT, true);
-            _webSocketServer.SslConfiguration.ServerCertificate = new System.Security.Cryptography.X509Certificates.X509Certificate2(WEBSOCKET_CERTIFICATE_PATH);
+            _webSocketServer.SslConfiguration.ServerCertificate = new System.Security.Cryptography.X509Certificates.X509Certificate2(LOCALHOST_CERTIFICATE_PATH);
             _webSocketServer.SslConfiguration.CheckCertificateRevocation = false;
             //_webSocketServer.Log.Level = WebSocketSharp.LogLevel.Debug;
             _webSocketServer.AddWebSocketService<SDPExchange>("/", (sdpExchanger) =>
@@ -155,78 +148,41 @@ namespace WebRTCServer
         {
             logger.LogDebug($"Web socket client connection from {context.UserEndPoint}.");
 
-            RTCConfiguration pcConfiguration = new RTCConfiguration
-            {
-                certificates = new List<RTCCertificate>
-                {
-                    new RTCCertificate
-                    {
-                        X_CertificatePath = DTLS_CERTIFICATE_PATH,
-                        X_KeyPath = DTLS_KEY_PATH,
-                        X_Fingerprint = DTLS_CERTIFICATE_FINGERPRINT
-                    }
-                }
-            };
+            var peerConnection = new RTCPeerConnection(null);
 
-            var peerConnection = new RTCPeerConnection(pcConfiguration);
-            var dtls = new DtlsHandshake(DTLS_CERTIFICATE_PATH, DTLS_KEY_PATH);
-
-            MediaStreamTrack audioTrack = new MediaStreamTrack("0", SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) });
+            MediaStreamTrack audioTrack = new MediaStreamTrack(SDPMediaTypesEnum.audio, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.PCMU) }, MediaStreamStatusEnum.SendOnly);
             peerConnection.addTrack(audioTrack);
-            MediaStreamTrack videoTrack = new MediaStreamTrack("1", SDPMediaTypesEnum.video, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.VP8) });
+            MediaStreamTrack videoTrack = new MediaStreamTrack(SDPMediaTypesEnum.video, false, new List<SDPMediaFormat> { new SDPMediaFormat(SDPMediaFormatsEnum.VP8) }, MediaStreamStatusEnum.SendOnly);
             peerConnection.addTrack(videoTrack);
 
             peerConnection.OnReceiveReport += RtpSession_OnReceiveReport;
             peerConnection.OnSendReport += RtpSession_OnSendReport;
-
-            peerConnection.OnTimeout += (mediaType) =>
-            {
-                peerConnection.Close("remote timeout");
-                dtls.Shutdown();
-            };
-
+            peerConnection.OnTimeout += (mediaType) => peerConnection.Close("remote timeout");
+            peerConnection.oniceconnectionstatechange += (state) => logger.LogDebug($"ICE connection state changed to {state}.");
             peerConnection.onconnectionstatechange += (state) =>
             {
+                logger.LogDebug($"Peer connection state changed to {state}.");
+
                 if (state == RTCPeerConnectionState.closed || state == RTCPeerConnectionState.disconnected || state == RTCPeerConnectionState.failed)
                 {
-                    logger.LogDebug($"RTC peer connection was closed.");
-                    OnMediaSampleReady -= peerConnection.SendMedia;
+                    OnVideoSampleReady -= peerConnection.SendVideo;
+                    OnAudioSampleReady -= peerConnection.SendAudio;
                     peerConnection.OnReceiveReport -= RtpSession_OnReceiveReport;
                     peerConnection.OnSendReport -= RtpSession_OnSendReport;
                 }
                 else if (state == RTCPeerConnectionState.connected)
                 {
-                    logger.LogDebug("Peer connection connected.");
-                    OnMediaSampleReady += peerConnection.SendMedia;
-                }
-            };
-
-            peerConnection.oniceconnectionstatechange += (state) =>
-            {
-                if (state == RTCIceConnectionState.connected)
-                {
-                    logger.LogDebug("Starting DTLS handshake task.");
-
-                    bool dtlsResult = false;
-                    Task.Run(async () => dtlsResult = await DoDtlsHandshake(peerConnection, dtls))
-                    .ContinueWith((t) =>
+                    if (!_isSampling)
                     {
-                        logger.LogDebug($"dtls handshake result {dtlsResult}.");
-
-                        if (dtlsResult)
-                        {
-                            peerConnection.SetDestination(SDPMediaTypesEnum.audio, peerConnection.IceSession.ConnectedRemoteEndPoint, peerConnection.IceSession.ConnectedRemoteEndPoint);
-                        }
-                        else
-                        {
-                            dtls.Shutdown();
-                            peerConnection.Close("dtls handshake failed.");
-                        }
-                    });
+                        _isSampling = true;
+                        OnVideoSampleReady += peerConnection.SendVideo;
+                        OnAudioSampleReady += peerConnection.SendAudio;
+                        _ = Task.Run(StartMedia);
+                    }
                 }
             };
 
-            var offerInit = await peerConnection.createOffer(null);
+            var offerInit = peerConnection.createOffer(null);
             await peerConnection.setLocalDescription(offerInit);
 
             logger.LogDebug($"Sending SDP offer to client {context.UserEndPoint}.");
@@ -236,65 +192,24 @@ namespace WebRTCServer
             return peerConnection;
         }
 
-        private static async Task WebSocketMessageReceived(RTCPeerConnection peerConnection, string message)
+        private static void WebSocketMessageReceived(RTCPeerConnection pc, string message)
         {
             try
             {
-                if (peerConnection.remoteDescription == null)
+                if (pc.remoteDescription == null)
                 {
                     logger.LogDebug("Answer SDP: " + message);
-                    await peerConnection.setRemoteDescription(new RTCSessionDescriptionInit { sdp = message, type = RTCSdpType.answer });
+                    pc.setRemoteDescription(new RTCSessionDescriptionInit { sdp = message, type = RTCSdpType.answer });
                 }
                 else
                 {
                     logger.LogDebug("ICE Candidate: " + message);
-                    await peerConnection.addIceCandidate(new RTCIceCandidateInit { candidate = message });
+                    pc.addIceCandidate(new RTCIceCandidateInit { candidate = message });
                 }
             }
             catch (Exception excp)
             {
                 logger.LogError("Exception WebSocketMessageReceived. " + excp.Message);
-            }
-        }
-
-        /// <summary>
-        /// Hands the socket handle to the DTLS context and waits for the handshake to complete.
-        /// </summary>
-        /// <param name="webRtcSession">The WebRTC session to perform the DTLS handshake on.</param>
-        /// <returns>True if the handshake completed successfully or false otherwise.</returns>
-        private static async Task<bool> DoDtlsHandshake(RTCPeerConnection peerConnection, DtlsHandshake dtls)
-        {
-            logger.LogDebug("DoDtlsHandshake started.");
-
-            int res = dtls.DoHandshakeAsServer((ulong)peerConnection.GetRtpChannel(SDPMediaTypesEnum.audio).RtpSocket.Handle);
-
-            logger.LogDebug("DtlsContext initialisation result=" + res);
-
-            if (dtls.IsHandshakeComplete())
-            {
-                logger.LogDebug("DTLS negotiation complete.");
-
-                var srtpSendContext = new Srtp(dtls, false);
-                var srtpReceiveContext = new Srtp(dtls, true);
-
-                peerConnection.SetSecurityContext(
-                    srtpSendContext.ProtectRTP,
-                    srtpReceiveContext.UnprotectRTP,
-                    srtpSendContext.ProtectRTCP,
-                    srtpReceiveContext.UnprotectRTCP);
-
-                await peerConnection.Start();
-
-                if (!_isSampling)
-                {
-                    _ = Task.Run(StartMedia);
-                }
-
-                return true;
-            }
-            else
-            {
-                return false;
             }
         }
 
@@ -341,7 +256,7 @@ namespace WebRTCServer
 
                 while (true)
                 {
-                    if (OnMediaSampleReady == null)
+                    if (OnVideoSampleReady == null && OnAudioSampleReady == null)
                     {
                         logger.LogDebug("No active clients, media sampling paused.");
                         break;
@@ -374,7 +289,7 @@ namespace WebRTCServer
                                 }
                             }
 
-                            OnMediaSampleReady?.Invoke(SDPMediaTypesEnum.video, _vp8Timestamp, vpxEncodedBuffer);
+                            OnVideoSampleReady?.Invoke(_vp8Timestamp, vpxEncodedBuffer);
 
                             //Console.WriteLine($"Video SeqNum {videoSeqNum}, timestamp {videoTimestamp}, buffer length {vpxEncodedBuffer.Length}, frame count {sampleProps.FrameCount}.");
 
@@ -394,7 +309,7 @@ namespace WebRTCServer
                                 mulawSample[sampleIndex++] = ulawByte;
                             }
 
-                            OnMediaSampleReady?.Invoke(SDPMediaTypesEnum.audio, _mulawTimestamp, mulawSample);
+                            OnAudioSampleReady?.Invoke(_mulawTimestamp, mulawSample);
 
                             //Console.WriteLine($"Audio SeqNum {audioSeqNum}, timestamp {audioTimestamp}, buffer length {mulawSample.Length}.");
 
@@ -405,7 +320,7 @@ namespace WebRTCServer
             }
             catch (Exception excp)
             {
-                logger.LogWarning("Exception OnProcessSampleEvent. " + excp.Message);
+                logger.LogWarning("Exception StartMedia. " + excp.Message);
             }
             finally
             {
@@ -435,7 +350,7 @@ namespace WebRTCServer
         /// <summary>
         /// Diagnostic handler to print out our RTCP reports from the remote WebRTC peer.
         /// </summary>
-        private static void RtpSession_OnReceiveReport(SDPMediaTypesEnum mediaType, RTCPCompoundPacket recvRtcpReport)
+        private static void RtpSession_OnReceiveReport(IPEndPoint remoteEndPoint, SDPMediaTypesEnum mediaType, RTCPCompoundPacket recvRtcpReport)
         {
             var rr = recvRtcpReport.ReceiverReport.ReceptionReports.FirstOrDefault();
             if (rr != null)
@@ -449,50 +364,18 @@ namespace WebRTCServer
         }
 
         /// <summary>
-        /// Runs a DTLS handshake test between two threads on a loopback address. The main motivation for
-        /// this test was that the first DTLS handshake between this application and a client browser
-        /// was often substantially slower and occasionally failed. By doing a loopback test the idea 
-        /// is that the internal OpenSSL state is initialised.
+        /// Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
         /// </summary>
-        private static void DoDtlsHandshakeLoopbackTest()
+        private static Microsoft.Extensions.Logging.ILogger AddConsoleLogger()
         {
-            IPAddress testAddr = IPAddress.Loopback;
-
-            Socket svrSock = new Socket(testAddr.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
-            svrSock.Bind(new IPEndPoint(testAddr, 9000));
-            int svrPort = ((IPEndPoint)svrSock.LocalEndPoint).Port;
-            DtlsHandshake svrHandshake = new DtlsHandshake(DTLS_CERTIFICATE_PATH, DTLS_KEY_PATH);
-            //svrHandshake.Debug = true;
-            var svrTask = Task.Run(() => svrHandshake.DoHandshakeAsServer((ulong)svrSock.Handle));
-
-            Socket cliSock = new Socket(testAddr.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
-            cliSock.Bind(new IPEndPoint(testAddr, 0));
-            cliSock.Connect(testAddr, svrPort);
-            DtlsHandshake cliHandshake = new DtlsHandshake();
-            //cliHandshake.Debug = true;
-            var cliTask = Task.Run(() => cliHandshake.DoHandshakeAsClient((ulong)cliSock.Handle, (short)testAddr.AddressFamily, testAddr.GetAddressBytes(), (ushort)svrPort));
-
-            bool result = Task.WaitAll(new Task[] { svrTask, cliTask }, TEST_DTLS_HANDSHAKE_TIMEOUT);
-
-            cliHandshake.Shutdown();
-            svrHandshake.Shutdown();
-            cliSock.Close();
-            svrSock.Close();
-        }
-
-        /// <summary>
-        ///  Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
-        /// </summary>
-        private static void AddConsoleLogger()
-        {
-            var loggerFactory = new Microsoft.Extensions.Logging.LoggerFactory();
-            var loggerConfig = new LoggerConfiguration()
+            var serilogLogger = new LoggerConfiguration()
                 .Enrich.FromLogContext()
                 .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
                 .WriteTo.Console()
                 .CreateLogger();
-            loggerFactory.AddSerilog(loggerConfig);
-            SIPSorcery.Sys.Log.LoggerFactory = loggerFactory;
+            var factory = new SerilogLoggerFactory(serilogLogger);
+            SIPSorcery.LogFactory.Set(factory);
+            return factory.CreateLogger<Program>();
         }
     }
 }

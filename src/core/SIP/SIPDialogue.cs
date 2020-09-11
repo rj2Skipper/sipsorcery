@@ -127,6 +127,8 @@ namespace SIPSorcery.SIP
 
         public SIPDialogueStateEnum DialogueState = SIPDialogueStateEnum.Unknown;
 
+        internal SIPNonInviteTransaction m_byeTransaction;
+
         public SIPDialogue() { }
 
         public SIPDialogue(
@@ -343,10 +345,10 @@ namespace SIPSorcery.SIP
                     byeOutboundProxy = new SIPEndPoint(via.Transport, IPAddress.Parse(via.ReceivedFromIPAddress), via.ReceivedFromPort, null, null);
                 }
 
-                SIPNonInviteTransaction byeTransaction = new SIPNonInviteTransaction(sipTransport, byeRequest, byeOutboundProxy);
+                m_byeTransaction = new SIPNonInviteTransaction(sipTransport, byeRequest, byeOutboundProxy);
                 //rj2 issue #2993: wait for answor of bye-request
                 System.Threading.ManualResetEventSlim waitOK = new System.Threading.ManualResetEventSlim(!waitForAnswer);
-                byeTransaction.NonInviteTransactionFinalResponseReceived += (SIPEndPoint localSIPEndPoint, SIPEndPoint remoteEndPoint, SIPTransaction sipTransaction, SIPResponse sipResponse) =>
+                m_byeTransaction.NonInviteTransactionFinalResponseReceived += (SIPEndPoint localSIPEndPoint, SIPEndPoint remoteEndPoint, SIPTransaction sipTransaction, SIPResponse sipResponse) =>
                 {
                     try
                     {
@@ -359,7 +361,7 @@ namespace SIPSorcery.SIP
                     }
                 };
 
-                byeTransaction.SendRequest();
+                m_byeTransaction.SendRequest();
 
                 waitOK.Wait(TimeSpan.FromSeconds(10));
             }
