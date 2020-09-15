@@ -79,7 +79,8 @@ namespace SIPSorcery.SIP.IntegrationTests
             }
         }
 
-        [Fact]
+        [Fact(Skip = "DNS Queries for QType.NAPTR are not supported widely in the wild.")]
+        //[Fact]
         public void ResolveSIPServiceTest()
         {
             try
@@ -87,27 +88,28 @@ namespace SIPSorcery.SIP.IntegrationTests
                 logger.LogDebug("--> " + System.Reflection.MethodBase.GetCurrentMethod().Name);
                 logger.BeginScope(System.Reflection.MethodBase.GetCurrentMethod().Name);
 
-                //SIPDNSManager.UseNAPTRLookups = true;
+                SIPDns.UseNAPTRLookups = true;
 
                 CancellationTokenSource cts = new CancellationTokenSource();
 
-                //var result = SIPDNSManager.ResolveSIPService(SIPURI.ParseSIPURIRelaxed("sip:reg.sip-trunk.telekom.de;transport=tcp"), false);
                 var result = SIPDns.ResolveAsync(SIPURI.ParseSIPURIRelaxed("sip:reg.sip-trunk.telekom.de;transport=tcp"), false, cts.Token).Result;
 
                 Assert.NotNull(result);
                 logger.LogDebug($"resolved to SIP end point {result}.");
-                //Assert.NotEmpty(result.SIPNAPTRResults);
-                //Assert.NotEmpty(result.SIPSRVResults);
-                //Assert.NotEmpty(result.EndPointResults);
+                Assert.Equal(5060, result.Port);
+                Assert.Equal(SIPProtocolsEnum.tcp, result.Protocol);
 
-                //result = SIPDNSManager.ResolveSIPService(SIPURI.ParseSIPURIRelaxed("sip:tel.t-online.de"), false);
-                //Assert.NotNull(resultEP);
-                //result = SIPDNSManager.ResolveSIPService(SIPURI.ParseSIPURIRelaxed("sips:hpbxsec.deutschland-lan.de:5061;transport=tls"), false);
-                //Assert.NotNull(resultEP);
+
+                result = SIPDns.ResolveAsync(SIPURI.ParseSIPURIRelaxed("sip:tel.t-online.de"), false, cts.Token).Result;
+                Assert.NotNull(result);
+                result = SIPDns.ResolveAsync(SIPURI.ParseSIPURIRelaxed("sips:hpbxsec.deutschland-lan.de;transport=tls"), false, cts.Token).Result;
+                Assert.NotNull(result);
+                Assert.Equal(5061, result.Port);
+                Assert.Equal(SIPProtocolsEnum.tls, result.Protocol);
             }
             finally
             {
-                //SIPDNSManager.UseNAPTRLookups = false;
+                SIPDns.UseNAPTRLookups = false;
             }
         }
 
