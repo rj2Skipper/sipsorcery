@@ -71,7 +71,6 @@ namespace SIPSorcery.SIP.IntegrationTests
             }
             else
             {
-                //var result = SIPDNSManager.ResolveSIPService(SIPURI.ParseSIPURIRelaxed(hostname), false);
                 var result = SIPDns.ResolveAsync(SIPURI.ParseSIPURIRelaxed(hostname), false, cts.Token).Result;
 
                 Assert.NotNull(result);
@@ -125,16 +124,12 @@ namespace SIPSorcery.SIP.IntegrationTests
             CancellationTokenSource cts = new CancellationTokenSource();
 
             SIPURI lookupURI = SIPURI.ParseSIPURIRelaxed("sip:tel.t-online.de");
-            //var result = SIPDNSManager.ResolveSIPService(lookupURI, false);
             var result = SIPDns.ResolveAsync(lookupURI, false, cts.Token).Result;
             Assert.NotNull(result);
 
-            //SIPEndPoint resultEP = result.GetSIPEndPoint();
             Assert.NotNull(result);
             Assert.NotEqual(SIPEndPoint.Empty, result);
             logger.LogDebug($"resolved to SIP end point {result}.");
-            //Assert.NotEmpty(result.SIPSRVResults);
-            //Assert.NotEmpty(result.EndPointResults);
 
             // Do the same look up again immediately to check the result when it comes from the in-memory cache.
             var resultCache = SIPDns.ResolveFromCache(lookupURI, false);
@@ -150,10 +145,7 @@ namespace SIPSorcery.SIP.IntegrationTests
             logger.BeginScope(System.Reflection.MethodBase.GetCurrentMethod().Name);
 
             CancellationTokenSource cts = new CancellationTokenSource();
-            //var result = await SIPDNSManager.ResolveAsync(SIPURI.ParseSIPURIRelaxed("sip:reg.sip-trunk.telekom.de;transport=tcp"));
             var result = await SIPDns.ResolveAsync(SIPURI.ParseSIPURIRelaxed("sip:reg.sip-trunk.telekom.de;transport=tcp"), false, cts.Token);
-
-            //SIPEndPoint resultEP = result.GetSIPEndPoint();
 
             Assert.NotNull(result);
 
