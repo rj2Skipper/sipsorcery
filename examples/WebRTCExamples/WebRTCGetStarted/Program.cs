@@ -1,14 +1,14 @@
 ﻿//-----------------------------------------------------------------------------
 // Filename: Program.cs
 //
-// Description: An example WebRTC server application that serves a sine wave 
-// audio stream to a WebRTC enabled browser.
+// Description: An example WebRTC server application that attempts to send and
+// receive audio and video. A web socket is used for signalling.
 //
 // Author(s):
 // Aaron Clauson (aaron@sipsorcery.com)
 // 
 // History:
-// 28 Jul 2020	Aaron Clauson	Created, Dublin, Ireland.
+// 12 Sep 2020	Aaron Clauson	Created, Dublin, Ireland.
 //
 // License: 
 // BSD 3-Clause "New" or "Revised" License, see included LICENSE.md file.
@@ -22,10 +22,11 @@ using System.Threading;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
-using Serilog.Extensions.Logging;
 using SIPSorcery.Net;
-using SIPSorcery.Media;
+using SIPSorceryMedia.Windows;
 using WebSocketSharp.Server;
+using SIPSorcery.Media;
+using Serilog.Extensions.Logging;
 
 namespace demo
 {
@@ -38,8 +39,8 @@ namespace demo
 
         static void Main()
         {
-            Console.WriteLine("WebRTC Audio Server Example Program");
-            
+            Console.WriteLine("WebRTC Get Started");
+
             logger = AddConsoleLogger();
 
             // Start web socket.
@@ -48,9 +49,10 @@ namespace demo
             webSocketServer.AddWebSocketService<WebRTCWebSocketPeer>("/", (peer) => peer.CreatePeerConnection = CreatePeerConnection);
             webSocketServer.Start();
 
-            Console.WriteLine($"Waiting for browser web socket connection to {webSocketServer.Address}:{webSocketServer.Port}...");
-
+            Console.WriteLine($"Waiting for web socket connections on {webSocketServer.Address}:{webSocketServer.Port}...");
             Console.WriteLine("Press ctrl-c to exit.");
+
+            // Ctrl-c will gracefully exit the call at any point.
             ManualResetEvent exitMre = new ManualResetEvent(false);
             Console.CancelKeyPress += delegate (object sender, ConsoleCancelEventArgs e)
             {
@@ -70,15 +72,20 @@ namespace demo
             };
             var pc = new RTCPeerConnection(config);
 
-            AudioExtrasSource audioSource = new AudioExtrasSource(new AudioEncoder(), new AudioSourceOptions { AudioSource = AudioSourcesEnum.SineWave });
-            audioSource.OnAudioSourceEncodedSample += pc.SendAudio;
+            var testPatternSource = new VideoTestPatternSource();
+            WindowsVideoEndPoint windowsVideoEndPoint = new WindowsVideoEndPoint(true);
+            var audioSource = new AudioExtrasSource(new AudioEncoder(), new AudioSourceOptions { AudioSource = AudioSourcesEnum.Music });
 
-            MediaStreamTrack audioTrack = new MediaStreamTrack(audioSource.GetAudioSourceFormats(), MediaStreamStatusEnum.SendOnly);
+            MediaStreamTrack videoTrack = new MediaStreamTrack(windowsVideoEndPoint.GetVideoSourceFormats(), MediaStreamStatusEnum.SendRecv);
+            pc.addTrack(videoTrack);
+            MediaStreamTrack audioTrack = new MediaStreamTrack(audioSource.GetAudioSourceFormats(), MediaStreamStatusEnum.SendRecv);
             pc.addTrack(audioTrack);
 
-            pc.OnAudioFormatsNegotiated += (sdpFormat) =>
-                audioSource.SetAudioSourceFormat(SDPMediaFormatInfo.GetAudioCodecForSdpFormat(sdpFormat.First().FormatCodec));
-
+            testPatternSource.OnVideoSourceRawSample += windowsVideoEndPoint.ExternalVideoSourceRawSample;
+            windowsVideoEndPoint.OnVideoSourceEncodedSample += pc.SendVideo;
+            audioSource.OnAudioSourceEncodedSample += pc.SendAudio;
+            pc.OnVideoFormatsNegotiated += (sdpFormat) =>
+                windowsVideoEndPoint.SetVideoSourceFormat(SDPMediaFormatInfo.GetVideoCodecForSdpFormat(sdpFormat.First().FormatCodec));
             pc.onconnectionstatechange += async (state) =>
             {
                 logger.LogDebug($"Peer connection state change to {state}.");
@@ -86,6 +93,8 @@ namespace demo
                 if (state == RTCPeerConnectionState.connected)
                 {
                     await audioSource.StartAudio();
+                    await windowsVideoEndPoint.StartVideo();
+                    await testPatternSource.StartVideo();
                 }
                 else if (state == RTCPeerConnectionState.failed)
                 {
@@ -93,6 +102,8 @@ namespace demo
                 }
                 else if (state == RTCPeerConnectionState.closed)
                 {
+                    await testPatternSource.CloseVideo();
+                    await windowsVideoEndPoint.CloseVideo();
                     await audioSource.CloseAudio();
                 }
             };
@@ -107,16 +118,16 @@ namespace demo
         }
 
         /// <summary>
-        /// Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
+        ///  Adds a console logger. Can be omitted if internal SIPSorcery debug and warning messages are not required.
         /// </summary>
         private static Microsoft.Extensions.Logging.ILogger AddConsoleLogger()
         {
-            var serilogLogger = new LoggerConfiguration()
+            var seriLogger = new LoggerConfiguration()
                 .Enrich.FromLogContext()
                 .MinimumLevel.Is(Serilog.Events.LogEventLevel.Debug)
                 .WriteTo.Console()
                 .CreateLogger();
-            var factory = new SerilogLoggerFactory(serilogLogger);
+            var factory = new SerilogLoggerFactory(seriLogger);
             SIPSorcery.LogFactory.Set(factory);
             return factory.CreateLogger<Program>();
         }
