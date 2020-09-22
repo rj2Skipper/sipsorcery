@@ -1,14 +1,14 @@
 ﻿//-----------------------------------------------------------------------------
 // Filename: Program.cs
 //
-// Description: An example WebRTC server application that serves a test pattern
-// video stream to a WebRTC enabled browser.
+// Description: An example WebRTC server application that streams the contents 
+// of a media file, such as an mp4, to a WebRTC enabled browser.
 //
 // Author(s):
 // Aaron Clauson (aaron@sipsorcery.com)
 // 
 // History:
-// 17 Jan 2020	Aaron Clauson	Created, Dublin, Ireland.
+// 17 Sep 2020	Aaron Clauson	Created, Dublin, Ireland.
 //
 // License: 
 // BSD 3-Clause "New" or "Revised" License, see included LICENSE.md file.
@@ -22,10 +22,11 @@ using System.Threading;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
-using SIPSorcery.Net;
-using WebSocketSharp.Server;
-using SIPSorcery.Media;
 using Serilog.Extensions.Logging;
+using SIPSorcery.Media;
+using SIPSorcery.Net;
+using SIPSorceryMedia.Abstractions.V1;
+using WebSocketSharp.Server;
 
 namespace demo
 {
@@ -33,12 +34,14 @@ namespace demo
     {
         private const int WEBSOCKET_PORT = 8081;
         private const string STUN_URL = "stun:stun.sipsorcery.com";
+        private const string MP4_PATH = "media/max_intro.mp4";
+        //private const string MP4_PATH = "media/big_buck_bunny.mp4";
 
         private static Microsoft.Extensions.Logging.ILogger logger = NullLogger.Instance;
 
         static void Main()
         {
-            Console.WriteLine("WebRTC Test Pattern Server Demo");
+            Console.WriteLine("WebRTC MP4 Source Demo");
 
             logger = AddConsoleLogger();
 
@@ -71,17 +74,22 @@ namespace demo
             };
             var pc = new RTCPeerConnection(config);
 
-            var testPatternSource = new VideoTestPatternSource();
-            var videoEndPoint = new SIPSorceryMedia.FFmpeg.FFmpegVideoEndPoint();
-            //var videoEndPoint = new SIPSorceryMedia.Windows.WindowsVideoEndPoint(true);
+            var mediaFileSource = new SIPSorceryMedia.FFmpeg.FFmpegFileSource(MP4_PATH, false, new AudioEncoder());
+            mediaFileSource.Initialise();
+            mediaFileSource.RestrictCodecs(new List<VideoCodecsEnum> { VideoCodecsEnum.VP8 });
+            mediaFileSource.RestrictCodecs(new List<AudioCodecsEnum> { AudioCodecsEnum.PCMU });
+            mediaFileSource.OnEndOfFile += () => pc.Close("source eof");
 
-            MediaStreamTrack track = new MediaStreamTrack(videoEndPoint.GetVideoSourceFormats(), MediaStreamStatusEnum.SendOnly);
-            pc.addTrack(track);
+            MediaStreamTrack videoTrack = new MediaStreamTrack(mediaFileSource.GetVideoSourceFormats(), MediaStreamStatusEnum.SendRecv);
+            pc.addTrack(videoTrack);
+            MediaStreamTrack audioTrack = new MediaStreamTrack(mediaFileSource.GetAudioSourceFormats(), MediaStreamStatusEnum.SendRecv);
+            pc.addTrack(audioTrack);
 
-            testPatternSource.OnVideoSourceRawSample += videoEndPoint.ExternalVideoSourceRawSample;
-            videoEndPoint.OnVideoSourceEncodedSample += pc.SendVideo;
-            pc.OnVideoFormatsNegotiated += (sdpFormat) => videoEndPoint.SetVideoSourceFormat(SDPMediaFormatInfo.GetVideoCodecForSdpFormat(sdpFormat.First().FormatCodec));
-            
+            mediaFileSource.OnVideoSourceEncodedSample += pc.SendVideo;
+            mediaFileSource.OnAudioSourceEncodedSample += pc.SendAudio;
+            pc.OnVideoFormatsNegotiated += (sdpFormat) => mediaFileSource.SetVideoSourceFormat(SDPMediaFormatInfo.GetVideoCodecForSdpFormat(sdpFormat.First().FormatCodec));
+            pc.OnAudioFormatsNegotiated += (sdpFormat) => mediaFileSource.SetAudioSourceFormat(SDPMediaFormatInfo.GetAudioCodecForSdpFormat(sdpFormat.First().FormatCodec));
+
             pc.onconnectionstatechange += async (state) =>
             {
                 logger.LogDebug($"Peer connection state change to {state}.");
@@ -92,13 +100,11 @@ namespace demo
                 }
                 else if (state == RTCPeerConnectionState.closed)
                 {
-                    await testPatternSource.CloseVideo();
-                    await videoEndPoint.CloseVideo();
+                    await mediaFileSource.CloseVideo();
                 }
                 else if (state == RTCPeerConnectionState.connected)
                 {
-                    await videoEndPoint.StartVideo();
-                    await testPatternSource.StartVideo();
+                    await mediaFileSource.StartVideo();
                 }
             };
 
