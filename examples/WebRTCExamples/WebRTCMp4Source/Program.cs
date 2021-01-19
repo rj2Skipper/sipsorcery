@@ -19,13 +19,14 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
 using Serilog.Extensions.Logging;
 using SIPSorcery.Media;
 using SIPSorcery.Net;
-using SIPSorceryMedia.Abstractions.V1;
+using SIPSorceryMedia.Abstractions;
 using WebSocketSharp.Server;
 
 namespace demo
@@ -66,7 +67,7 @@ namespace demo
             exitMre.WaitOne();
         }
 
-        private static RTCPeerConnection CreatePeerConnection()
+        private static Task<RTCPeerConnection> CreatePeerConnection()
         {
             RTCConfiguration config = new RTCConfiguration
             {
@@ -76,8 +77,8 @@ namespace demo
 
             var mediaFileSource = new SIPSorceryMedia.FFmpeg.FFmpegFileSource(MP4_PATH, false, new AudioEncoder());
             mediaFileSource.Initialise();
-            mediaFileSource.RestrictCodecs(new List<VideoCodecsEnum> { VideoCodecsEnum.VP8 });
-            mediaFileSource.RestrictCodecs(new List<AudioCodecsEnum> { AudioCodecsEnum.PCMU });
+            mediaFileSource.RestrictFormats(x => x.Codec == VideoCodecsEnum.VP8);
+            mediaFileSource.RestrictFormats(x => x.Codec == AudioCodecsEnum.PCMU);
             mediaFileSource.OnEndOfFile += () => pc.Close("source eof");
 
             MediaStreamTrack videoTrack = new MediaStreamTrack(mediaFileSource.GetVideoSourceFormats(), MediaStreamStatusEnum.SendRecv);
@@ -87,8 +88,8 @@ namespace demo
 
             mediaFileSource.OnVideoSourceEncodedSample += pc.SendVideo;
             mediaFileSource.OnAudioSourceEncodedSample += pc.SendAudio;
-            pc.OnVideoFormatsNegotiated += (sdpFormat) => mediaFileSource.SetVideoSourceFormat(SDPMediaFormatInfo.GetVideoCodecForSdpFormat(sdpFormat.First().FormatCodec));
-            pc.OnAudioFormatsNegotiated += (sdpFormat) => mediaFileSource.SetAudioSourceFormat(SDPMediaFormatInfo.GetAudioCodecForSdpFormat(sdpFormat.First().FormatCodec));
+            pc.OnVideoFormatsNegotiated += (videoFormats) => mediaFileSource.SetVideoSourceFormat(videoFormats.First());
+            pc.OnAudioFormatsNegotiated += (audioFormats) => mediaFileSource.SetAudioSourceFormat(audioFormats.First());
 
             pc.onconnectionstatechange += async (state) =>
             {
@@ -114,7 +115,7 @@ namespace demo
             //pc.GetRtpChannel().OnStunMessageReceived += (msg, ep, isRelay) => logger.LogDebug($"STUN {msg.Header.MessageType} received from {ep}.");
             pc.oniceconnectionstatechange += (state) => logger.LogDebug($"ICE connection state change to {state}.");
 
-            return pc;
+            return Task.FromResult(pc);
         }
 
         /// <summary>

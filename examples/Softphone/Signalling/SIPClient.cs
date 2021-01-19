@@ -23,7 +23,8 @@ using SIPSorcery.Media;
 using SIPSorcery.Net;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
-using SIPSorceryMedia.Abstractions.V1;
+using SIPSorceryMedia.Abstractions;
+using SIPSorceryMedia.Encoders;
 using SIPSorceryMedia.Windows;
 
 namespace SIPSorcery.SoftPhone
@@ -213,9 +214,9 @@ namespace SIPSorcery.SoftPhone
         /// <summary>
         /// Puts the remote call party on hold.
         /// </summary>
-        public void PutOnHold()
+        public async Task PutOnHold()
         { 
-            MediaSession.PutOnHold();
+            await MediaSession.PutOnHold();
             m_userAgent.PutOnHold();
             StatusMessage(this, "Local party put on hold");
         }
@@ -297,7 +298,7 @@ namespace SIPSorcery.SoftPhone
         private VoIPMediaSession CreateMediaSession()
         {
             var windowsAudioEndPoint = new WindowsAudioEndPoint(new AudioEncoder(), m_audioOutDeviceIndex);
-            var windowsVideoEndPoint = new WindowsVideoEndPoint();
+            var windowsVideoEndPoint = new WindowsVideoEndPoint(new VpxVideoEncoder());
 
             MediaEndPoints mediaEndPoints = new MediaEndPoints
             {
@@ -307,7 +308,10 @@ namespace SIPSorcery.SoftPhone
                 VideoSource = windowsVideoEndPoint,
             };
 
-            var voipMediaSession = new VoIPMediaSession(mediaEndPoints);
+            // Fallback video source if a Windows webcam cannot be accessed.
+            var testPatternSource = new VideoTestPatternSource(new VpxVideoEncoder());
+
+            var voipMediaSession = new VoIPMediaSession(mediaEndPoints, testPatternSource);
             voipMediaSession.AcceptRtpFromAny = true;
 
             return voipMediaSession;

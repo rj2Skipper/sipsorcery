@@ -15,7 +15,6 @@
 //-----------------------------------------------------------------------------
 
 using System;
-using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Threading;
@@ -28,7 +27,8 @@ using Serilog.Extensions.Logging;
 using SIPSorcery.Media;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
-using SIPSorceryMedia.Abstractions.V1;
+using SIPSorceryMedia.Abstractions;
+using SIPSorceryMedia.Encoders;
 using SIPSorceryMedia.Windows;
 
 namespace demo
@@ -37,19 +37,23 @@ namespace demo
     {
         private static string DESTINATION = "aaron@127.0.0.1:6060"; //"127.0.0.1:5060"; //"aaron@172.19.16.1:7060";
         private static int CALL_TIMEOUT_SECONDS = 20;
+        private static int VIDEO_FRAME_WIDTH = 640;
+        private static int VIDEO_FRAME_HEIGHT = 480;
 
         private static Microsoft.Extensions.Logging.ILogger Log = NullLogger.Instance;
 
         private static SIPTransport _sipTransport;
         private static Form _form;
-        private static PictureBox _picBox;
+        private static PictureBox _remoteVideoPicBox;
+        private static PictureBox _localVideoPicBox;
 
-        static void Main()
+        static async Task Main()
         {
             Console.WriteLine("SIPSorcery Getting Started Video Call Demo");
             Console.WriteLine("Press ctrl-c to exit.");
 
             Log = AddConsoleLogger();
+            ManualResetEvent exitMRE = new ManualResetEvent(false);
 
             _sipTransport = new SIPTransport();
 
@@ -59,13 +63,20 @@ namespace demo
             _form = new Form();
             _form.AutoSize = true;
             _form.BackgroundImageLayout = ImageLayout.Center;
-            _picBox = new PictureBox
+            _localVideoPicBox = new PictureBox
             {
-                Size = new Size(640, 480),
+                Size = new Size(VIDEO_FRAME_WIDTH, VIDEO_FRAME_HEIGHT),
                 Location = new Point(0, 0),
                 Visible = true
             };
-            _form.Controls.Add(_picBox);
+            _remoteVideoPicBox = new PictureBox
+            {
+                Size = new Size(VIDEO_FRAME_WIDTH, VIDEO_FRAME_HEIGHT),
+                Location = new Point(0, VIDEO_FRAME_HEIGHT),
+                Visible = true
+            };
+            _form.Controls.Add(_localVideoPicBox);
+            _form.Controls.Add(_remoteVideoPicBox);
 
             Application.EnableVisualStyles();
             ThreadPool.QueueUserWorkItem(delegate { Application.Run(_form); });
@@ -80,10 +91,14 @@ namespace demo
 
             string executableDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
 
-            var userAgent = new SIPUserAgent(_sipTransport, null);
+            var userAgent = new SIPUserAgent(_sipTransport, null, true);
+            userAgent.OnCallHungup += (dialog) => exitMRE.Set();
             var windowsAudioEndPoint = new WindowsAudioEndPoint(new AudioEncoder());
-            windowsAudioEndPoint.RestrictCodecs(new List<AudioCodecsEnum> { AudioCodecsEnum.PCMU });
-            var windowsVideoEndPoint = new WindowsVideoEndPoint();
+            windowsAudioEndPoint.RestrictFormats(format => format.Codec == AudioCodecsEnum.PCMU);
+            var windowsVideoEndPoint = new WindowsVideoEndPoint(new VpxVideoEncoder());
+
+            // Fallback to a test pattern source if accessing the Windows webcam fails.
+            var testPattern = new VideoTestPatternSource(new VpxVideoEncoder());
 
             MediaEndPoints mediaEndPoints = new MediaEndPoints
             {
@@ -93,28 +108,44 @@ namespace demo
                 VideoSource = windowsVideoEndPoint,
             };
 
-            var voipMediaSession = new VoIPMediaSession(mediaEndPoints);
+            var voipMediaSession = new VoIPMediaSession(mediaEndPoints, testPattern);
             voipMediaSession.AcceptRtpFromAny = true;
+
+            windowsVideoEndPoint.OnVideoSourceRawSample += (uint durationMilliseconds, int width, int height, byte[] sample, VideoPixelFormatsEnum pixelFormat) =>
+            {
+                _form?.BeginInvoke(new Action(() =>
+                {
+                    unsafe
+                    {
+                        fixed (byte* s = sample)
+                        {
+                            System.Drawing.Bitmap bmpImage = new System.Drawing.Bitmap(width, height, width * 3, System.Drawing.Imaging.PixelFormat.Format24bppRgb, (IntPtr)s);
+                            _localVideoPicBox.Image = bmpImage;
+                        }
+                    }
+                }));
+            };
+
+            Console.WriteLine("Starting local video source...");
+            await windowsVideoEndPoint.StartVideo().ConfigureAwait(false);
 
             // Place the call and wait for the result.
             Task<bool> callTask = userAgent.Call(DESTINATION, null, null, voipMediaSession);
             callTask.Wait(CALL_TIMEOUT_SECONDS * 1000);
-
-            ManualResetEvent exitMRE = new ManualResetEvent(false);
 
             if (callTask.Result)
             {
                 Log.LogInformation("Call attempt successful.");
                 windowsVideoEndPoint.OnVideoSinkDecodedSample += (byte[] bmp, uint width, uint height, int stride, VideoPixelFormatsEnum pixelFormat) =>
                 {
-                    _picBox.BeginInvoke(new Action(() =>
+                    _form?.BeginInvoke(new Action(() =>
                     {
                         unsafe
                         {
                             fixed (byte* s = bmp)
                             {
                                 System.Drawing.Bitmap bmpImage = new System.Drawing.Bitmap((int)width, (int)height, stride, System.Drawing.Imaging.PixelFormat.Format24bppRgb, (IntPtr)s);
-                                _picBox.Image = bmpImage;
+                                _remoteVideoPicBox.Image = bmpImage;
                             }
                         }
                     }));

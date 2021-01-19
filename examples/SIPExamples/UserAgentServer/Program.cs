@@ -62,13 +62,13 @@ using SIPSorcery.Media;
 using SIPSorcery.Net;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
-using SIPSorceryMedia.Abstractions.V1;
+using SIPSorceryMedia.Abstractions;
 
 namespace SIPSorcery
 {
     class Program
     {
-        private static int SIP_LISTEN_PORT = 5060;
+        private static int SIP_LISTEN_PORT = 5080;
         private static int SIPS_LISTEN_PORT = 5061;
         //private static int SIP_WEBSOCKET_LISTEN_PORT = 80;
         //private static int SIP_SECURE_WEBSOCKET_LISTEN_PORT = 443;
@@ -147,7 +147,7 @@ namespace SIPSorcery
                         var offerSdp = SDP.ParseSDPDescription(sipRequest.Body);
                         IPEndPoint dstRtpEndPoint = SDP.GetSDPRTPEndPoint(sipRequest.Body);
 
-                        if (offerSdp.Media.Any(x => x.Media == SDPMediaTypesEnum.audio && x.HasMediaFormat((int)SDPMediaFormatsEnum.PCMU)))
+                        if (offerSdp.Media.Any(x => x.Media == SDPMediaTypesEnum.audio && x.MediaFormats.Any(x => x.Key == (int)SDPWellKnownMediaFormatsEnum.PCMU)))
                         {
                             Log.LogDebug($"Client offer contained PCMU audio codec.");
                             AudioExtrasSource extrasSource = new AudioExtrasSource(new AudioEncoder(), new AudioSourceOptions { AudioSource = AudioSourcesEnum.Music });
@@ -174,7 +174,7 @@ namespace SIPSorcery
                                 rtpCts = new CancellationTokenSource();
 
                                 UASInviteTransaction uasTransaction = new UASInviteTransaction(sipTransport, sipRequest, null);
-                                uas = new SIPServerUserAgent(sipTransport, null, null, null, SIPCallDirection.In, null, null, uasTransaction);
+                                uas = new SIPServerUserAgent(sipTransport, null, uasTransaction, null);
                                 uas.CallCancelled += (uasAgent) =>
                                 {
                                     rtpCts?.Cancel();
@@ -182,7 +182,9 @@ namespace SIPSorcery
                                 };
                                 rtpSession.OnRtpClosed += (reason) => uas?.Hangup(false);
                                 uas.Progress(SIPResponseStatusCodesEnum.Trying, null, null, null, null);
+                                await Task.Delay(100);
                                 uas.Progress(SIPResponseStatusCodesEnum.Ringing, null, null, null, null);
+                                await Task.Delay(100);
 
                                 var answerSdp = rtpSession.CreateAnswer(null);
                                 uas.Answer(SDP.SDP_MIME_CONTENTTYPE, answerSdp.ToString(), null, SIPDialogueTransferModesEnum.NotAllowed);

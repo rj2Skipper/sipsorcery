@@ -32,8 +32,6 @@ namespace demo
     class Program
     {
         private static string DESTINATION = "time@sipsorcery.com";
-        //private static string DESTINATION = "sip:pcdodo@192.168.0.50";
-        private static SIPEndPoint OUTBOUND_PROXY = null; // SIPEndPoint.ParseSIPEndPoint("udp:192.168.0.148:5060");
 
         static async Task Main()
         {
@@ -46,14 +44,14 @@ namespace demo
 
             EnableTraceLogs(sipTransport);
 
-            var userAgent = new SIPUserAgent(sipTransport, OUTBOUND_PROXY);
+            var userAgent = new SIPUserAgent(sipTransport, null);
             userAgent.ClientCallFailed += (uac, error, sipResponse) => Console.WriteLine($"Call failed {error}.");
             userAgent.OnCallHungup += (dialog) => exitCts.Cancel();
 
             var windowsAudio = new WindowsAudioEndPoint(new AudioEncoder());
             var voipMediaSession = new VoIPMediaSession(windowsAudio.ToMediaEndPoints());
             voipMediaSession.AcceptRtpFromAny = true;
-            
+
             // Place the call and wait for the result.
             var callTask = userAgent.Call(DESTINATION, null, null, voipMediaSession);
 

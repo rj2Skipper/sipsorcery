@@ -48,10 +48,6 @@ namespace SIPSorcery.SIP
     {
         protected static ILogger logger = Log.Logger;
 
-        protected static string m_CRLF = SIPConstants.CRLF;
-        protected static string m_sipVersion = SIPConstants.SIP_VERSION_STRING;
-        private static readonly int m_defaultSIPPort = SIPConstants.DEFAULT_SIP_PORT;
-
         public Guid Id { get; set; }                                // Id for persistence, NOT used for SIP call purposes.
         public string CallId { get; set; }
         public SIPRouteSet RouteSet { get; set; }
@@ -70,21 +66,18 @@ namespace SIPSorcery.SIP
         public int CallDurationLimit { get; set; }                  // If non-zero indicates the dialogue established should only be permitted to stay up for this many seconds.
         public string ProxySendFrom { get; set; }                   // If set this is the socket the upstream proxy received the call on.
         public SIPDialogueTransferModesEnum TransferMode { get; set; }  // Specifies how the dialogue will handle REFER requests (transfers).
+        public SIPEndPoint RemoteSIPEndPoint { get; set; }          // The SIP end point for the remote party.
 
         /// <summary>
         /// Indicates whether the dialogue was created by a ingress or egress call.
         /// </summary>
         public SIPCallDirection Direction { get; set; }
 
-        public string CRMPersonName { get; set; }
-        public string CRMCompanyName { get; set; }
-        public string CRMPictureURL { get; set; }
-
         public SIPRequest SIPRequest    //rj2: SIPRequest (INVITE or not) this SIPDialogue was created from
         {
             get; private set;
         }
-
+        
         /// <summary>
         /// Used as a flag to indicate whether to send an immediate or slightly delayed re-INVITE request 
         /// when a call is answered as an attempt to help solve audio issues.
@@ -116,8 +109,8 @@ namespace SIPSorcery.SIP
             }
         }
 
-        private DateTimeOffset m_inserted;
-        public DateTimeOffset Inserted
+        private DateTime m_inserted;
+        public DateTime Inserted
         {
             get { return m_inserted; }
             set { m_inserted = value.ToUniversalTime(); }
@@ -140,7 +133,8 @@ namespace SIPSorcery.SIP
             string remoteTag,
             Guid cdrId,
             string sdp,
-            string remoteSDP)
+            string remoteSDP,
+            SIPEndPoint remoteEndPoint)
         {
             Id = Guid.NewGuid();
 
@@ -155,8 +149,9 @@ namespace SIPSorcery.SIP
             CDRId = cdrId;
             SDP = sdp;
             RemoteSDP = remoteSDP;
-            Inserted = DateTimeOffset.UtcNow;
+            Inserted = DateTime.UtcNow;
             Direction = SIPCallDirection.None;
+            RemoteSIPEndPoint = remoteEndPoint?.CopyOf();
         }
 
         /// <summary>
@@ -164,8 +159,7 @@ namespace SIPSorcery.SIP
         /// acting as a server user agent the local fields are contained in the To header and the remote fields are 
         /// in the From header.
         /// </summary>
-        public SIPDialogue(
-            UASInviteTransaction uasInviteTransaction)
+        public SIPDialogue(UASInviteTransaction uasInviteTransaction)
         {
             Id = Guid.NewGuid();
             this.SIPRequest = uasInviteTransaction.TransactionRequest;
@@ -182,25 +176,46 @@ namespace SIPSorcery.SIP
             ContentType = uasInviteTransaction.TransactionFinalResponse.Header.ContentType;
             SDP = uasInviteTransaction.TransactionFinalResponse.Body;
             RemoteSDP = uasInviteTransaction.TransactionRequest.Body ?? uasInviteTransaction.AckRequest.Body;
-            Inserted = DateTimeOffset.UtcNow;
+            Inserted = DateTime.UtcNow;
             Direction = SIPCallDirection.In;
 
-            RemoteTarget = new SIPURI(uasInviteTransaction.TransactionRequest.URI.Scheme, uasInviteTransaction.TransactionRequest.RemoteSIPEndPoint.CopyOf());
-            ProxySendFrom = uasInviteTransaction.TransactionRequest.Header.ProxyReceivedOn;
-            if (uasInviteTransaction.TransactionRequest.Header.Contact != null && uasInviteTransaction.TransactionRequest.Header.Contact.Count > 0)
+            if (uasInviteTransaction.m_gotPrack)
             {
-                RemoteTarget = uasInviteTransaction.TransactionRequest.Header.Contact[0].ContactURI.CopyOf();
-                if (!uasInviteTransaction.TransactionRequest.Header.ProxyReceivedFrom.IsNullOrBlank())
-                {
-                    // Setting the Proxy-ReceivedOn header is how an upstream proxy will let an agent know it should mangle the contact. 
-                    // Don't mangle private contacts if there is a Record-Route header. If a proxy is putting private IP's in a Record-Route header that's its problem.
-                    if (RouteSet == null && IPSocket.IsPrivateAddress(RemoteTarget.Host))
-                    {
-                        SIPEndPoint remoteUASSIPEndPoint = SIPEndPoint.ParseSIPEndPoint(uasInviteTransaction.TransactionRequest.Header.ProxyReceivedFrom);
-                        RemoteTarget.Host = remoteUASSIPEndPoint.GetIPEndPoint().ToString();
-                    }
-                }
+                CSeq++;
             }
+
+            var inviteReq = uasInviteTransaction.TransactionRequest;
+
+            // Set the dialogue remote target taking into account optional Proxy header fields.
+            // No mangling takes place. All the information is recorded to allow an application to perform mangling 
+            // if so required.
+            SIPEndPoint remoteEndPointViaProxy = SIPEndPoint.ParseSIPEndPoint(inviteReq.Header.ProxyReceivedFrom);
+            RemoteSIPEndPoint = remoteEndPointViaProxy ?? inviteReq.RemoteSIPEndPoint.CopyOf();
+            ProxySendFrom = inviteReq.Header.ProxyReceivedOn;
+
+            if (inviteReq.Header.Contact != null && inviteReq.Header.Contact.Count > 0)
+            {
+                RemoteTarget = inviteReq.Header.Contact[0].ContactURI.CopyOf();
+            }
+            else
+            {
+                RemoteTarget = new SIPURI(inviteReq.URI.Scheme, inviteReq.RemoteSIPEndPoint);
+            }
+
+            //if (uasInviteTransaction.TransactionRequest.Header.Contact != null && uasInviteTransaction.TransactionRequest.Header.Contact.Count > 0)
+            //{
+            //    RemoteTarget = uasInviteTransaction.TransactionRequest.Header.Contact[0].ContactURI.CopyOf();
+            //    if (!uasInviteTransaction.TransactionRequest.Header.ProxyReceivedFrom.IsNullOrBlank())
+            //    {
+            //        // Setting the Proxy-ReceivedOn header is how an upstream proxy will let an agent know it should mangle the contact. 
+            //        // Don't mangle private contacts if there is a Record-Route header. If a proxy is putting private IP's in a Record-Route header that's its problem.
+            //        if (RouteSet == null && IPSocket.IsPrivateAddress(RemoteTarget.HostAddress))
+            //        {
+            //            SIPEndPoint remoteUASSIPEndPoint = SIPEndPoint.ParseSIPEndPoint(uasInviteTransaction.TransactionRequest.Header.ProxyReceivedFrom);
+            //            RemoteTarget.Host = remoteUASSIPEndPoint.GetIPEndPoint().ToString();
+            //        }
+            //    }
+            //}
         }
 
         /// <summary>
@@ -224,33 +239,47 @@ namespace SIPSorcery.SIP
             ContentType = uacInviteTransaction.TransactionRequest.Header.ContentType;
             SDP = uacInviteTransaction.TransactionRequest.Body;
             RemoteSDP = uacInviteTransaction.TransactionFinalResponse.Body;
-            Inserted = DateTimeOffset.UtcNow;
+            Inserted = DateTime.UtcNow;
             Direction = SIPCallDirection.Out;
 
-            // Set the dialogue remote target and take care of mangling if an upstream proxy has indicated it's required.
-            if (uacInviteTransaction.TransactionFinalResponse != null)
+            if (uacInviteTransaction.m_sentPrack)
             {
-                RemoteTarget = new SIPURI(uacInviteTransaction.TransactionRequest.URI.Scheme, uacInviteTransaction.TransactionFinalResponse.RemoteSIPEndPoint.CopyOf());
+                CSeq++;
+            }
+
+            // Set the dialogue remote target taking into account optional Proxy header fields.
+            // No mangling takes place. All the information is recorded to allow an application to perform mangling 
+            // if so required.
+            var finalResponse = uacInviteTransaction.TransactionFinalResponse;
+            if (finalResponse.Header.Contact != null && finalResponse.Header.Contact.Count > 0)
+            {
+                RemoteTarget = finalResponse.Header.Contact[0].ContactURI.CopyOf();
             }
             else
             {
-                RemoteTarget = new SIPURI(uacInviteTransaction.TransactionRequest.URI.Scheme, uacInviteTransaction.TransactionRequest.RemoteSIPEndPoint.CopyOf());
+                // No contact header supplied by remote party. Best option is to use the original INVITE request URI.
+                RemoteTarget = uacInviteTransaction.TransactionRequest.URI.CopyOf();
             }
+
+            SIPEndPoint remoteEndPointViaProxy = SIPEndPoint.ParseSIPEndPoint(finalResponse.Header.ProxyReceivedFrom);
+            RemoteSIPEndPoint = remoteEndPointViaProxy ?? finalResponse.RemoteSIPEndPoint.CopyOf();
+
             ProxySendFrom = uacInviteTransaction.TransactionFinalResponse.Header.ProxyReceivedOn;
-            if (uacInviteTransaction.TransactionFinalResponse.Header.Contact != null && uacInviteTransaction.TransactionFinalResponse.Header.Contact.Count > 0)
-            {
-                RemoteTarget = uacInviteTransaction.TransactionFinalResponse.Header.Contact[0].ContactURI.CopyOf();
-                if (!uacInviteTransaction.TransactionFinalResponse.Header.ProxyReceivedFrom.IsNullOrBlank())
-                {
-                    // Setting the Proxy-ReceivedOn header is how an upstream proxy will let an agent know it should mangle the contact. 
-                    // Don't mangle private contacts if there is a Record-Route header. If a proxy is putting private IP's in a Record-Route header that's its problem.
-                    if (RouteSet == null && IPSocket.IsPrivateAddress(RemoteTarget.Host))
-                    {
-                        SIPEndPoint remoteUASSIPEndPoint = SIPEndPoint.ParseSIPEndPoint(uacInviteTransaction.TransactionFinalResponse.Header.ProxyReceivedFrom);
-                        RemoteTarget.Host = remoteUASSIPEndPoint.GetIPEndPoint().ToString();
-                    }
-                }
-            }
+
+            //if (uacInviteTransaction.TransactionFinalResponse.Header.Contact != null && uacInviteTransaction.TransactionFinalResponse.Header.Contact.Count > 0)
+            //{
+            //    RemoteTarget = uacInviteTransaction.TransactionFinalResponse.Header.Contact[0].ContactURI.CopyOf();
+            //    if (!uacInviteTransaction.TransactionFinalResponse.Header.ProxyReceivedFrom.IsNullOrBlank())
+            //    {
+            //        // Setting the Proxy-ReceivedOn header is how an upstream proxy will let an agent know it should mangle the contact. 
+            //        // Don't mangle private contacts if there is a Record-Route header. If a proxy is putting private IP's in a Record-Route header that's its problem.
+            //        if (RouteSet == null && IPSocket.IsPrivateAddress(RemoteTarget.Host))
+            //        {
+            //            SIPEndPoint remoteUASSIPEndPoint = SIPEndPoint.ParseSIPEndPoint(uacInviteTransaction.TransactionFinalResponse.Header.ProxyReceivedFrom);
+            //            RemoteTarget.Host = remoteUASSIPEndPoint.GetIPEndPoint().ToString();
+            //        }
+            //    }
+            //}
         }
 
         /// <summary>
@@ -272,23 +301,37 @@ namespace SIPSorcery.SIP
             LocalUserField.Parameters.Set("tag", toTag);
             LocalTag = toTag;
             CSeq = nonInviteRequest.Header.CSeq;
-            Inserted = DateTimeOffset.UtcNow;
+            Inserted = DateTime.UtcNow;
             Direction = SIPCallDirection.Out;
 
-            // Set the dialogue remote target and take care of mangling if an upstream proxy has indicated it's required.
-            RemoteTarget = nonInviteRequest.Header.Contact[0].ContactURI;
+            SIPEndPoint remoteEndPointViaProxy = SIPEndPoint.ParseSIPEndPoint(nonInviteRequest.Header.ProxyReceivedFrom);
+            RemoteSIPEndPoint = remoteEndPointViaProxy ?? nonInviteRequest.RemoteSIPEndPoint.CopyOf();
+
+            // Set the dialogue remote target taking into account optional proxy header fields.
+            // No mangling takes place. All the information is recorded to allow an application to perform mangling 
+            // if so required.
+            if (nonInviteRequest.Header.Contact != null && nonInviteRequest.Header.Contact.Count > 0)
+            {
+                RemoteTarget = nonInviteRequest.Header.Contact[0].ContactURI.CopyOf();
+            }
+            else
+            {
+                // No contact header supplied by remote party. Best option is to use the SIP end point the request came from.
+                RemoteTarget = new SIPURI(nonInviteRequest.URI.Scheme, RemoteSIPEndPoint);
+            }
+
             ProxySendFrom = nonInviteRequest.Header.ProxyReceivedOn;
 
-            if (!nonInviteRequest.Header.ProxyReceivedFrom.IsNullOrBlank())
-            {
-                // Setting the Proxy-ReceivedOn header is how an upstream proxy will let an agent know it should mangle the contact.
-                // Don't mangle private contacts if there is a Record-Route header. If a proxy is putting private IP's in a Record-Route header that's its problem.
-                if (RouteSet == null && IPSocket.IsPrivateAddress(RemoteTarget.Host))
-                {
-                    SIPEndPoint remoteUASIPEndPoint = SIPEndPoint.ParseSIPEndPoint(nonInviteRequest.Header.ProxyReceivedFrom);
-                    RemoteTarget.Host = remoteUASIPEndPoint.GetIPEndPoint().ToString();
-                }
-            }
+            //if (!nonInviteRequest.Header.ProxyReceivedFrom.IsNullOrBlank())
+            //{
+            //    // Setting the Proxy-ReceivedOn header is how an upstream proxy will let an agent know it should mangle the contact.
+            //    // Don't mangle private contacts if there is a Record-Route header. If a proxy is putting private IP's in a Record-Route header that's its problem.
+            //    if (RouteSet == null && IPSocket.IsPrivateAddress(RemoteTarget.Host))
+            //    {
+            //        SIPEndPoint remoteUASIPEndPoint = SIPEndPoint.ParseSIPEndPoint(nonInviteRequest.Header.ProxyReceivedFrom);
+            //        RemoteTarget.Host = remoteUASIPEndPoint.GetIPEndPoint().ToString();
+            //    }
+            //}
         }
 
         /// <summary>
@@ -296,8 +339,12 @@ namespace SIPSorcery.SIP
         /// This has the effect of hanging up the call.
         /// </summary>
         /// <param name="sipTransport">The transport layer to use for sending the request.</param>
-        /// <param name="outboundProxy">Optional. If set an end point that the BYE request will be directly forwarded to.</param>
-        public void Hangup(SIPTransport sipTransport, SIPEndPoint outboundProxy, bool waitForAnswer = false)
+        /// <param name="outboundProxy">Optional. If set an end point that the BYE request will be directly 
+        /// forwarded to.</param>
+        /// <param name="target">Optional. If set this will be set as the in-dialog request URI instead of
+        /// the dialogue's remote target field. The primary purpose of setting a custom target is to allow
+        /// an application to attempt to deal with IPv4 NATs.</param>
+        public void Hangup(SIPTransport sipTransport, SIPEndPoint outboundProxy, SIPURI target = null, bool waitForAnswer = false)
         {
             try
             {
@@ -310,14 +357,14 @@ namespace SIPSorcery.SIP
                 }
                 else if (!ProxySendFrom.IsNullOrBlank())
                 {
-                    byeOutboundProxy = new SIPEndPoint(new IPEndPoint(SIPEndPoint.ParseSIPEndPoint(ProxySendFrom).Address, m_defaultSIPPort));
+                    byeOutboundProxy = SIPEndPoint.ParseSIPEndPoint(ProxySendFrom);
                 }
                 else if (outboundProxy != null)
                 {
                     byeOutboundProxy = outboundProxy;
                 }
 
-                SIPRequest byeRequest = GetInDialogRequest(SIPMethodsEnum.BYE);
+                SIPRequest byeRequest = GetInDialogRequest(SIPMethodsEnum.BYE, target);
 
                 //rj2: 2017-09-04
                 if (this.SIPRequest?.Header?.Vias?.TopViaHeader?.ViaParameters.Has("Alias") == true || SIPRequest?.Header?.Vias?.TopViaHeader?.ViaParameters.Has("alias") == true)
@@ -358,12 +405,15 @@ namespace SIPSorcery.SIP
         /// This is safe to do even if the request does not end up being sent.
         /// </summary>
         /// <param name="method">The method of the SIP request to create.</param>
+        /// <param name="target">Optional. If set this will be set as the in-dialog request URI instead of 
+        /// the dialogue's remote target field. The primary purpose of setting a custom target is to allow 
+        /// an application to attempt to deal with IPv4 NATs.</param>
         /// <returns>An in dialog SIP request.</returns>
-        public SIPRequest GetInDialogRequest(SIPMethodsEnum method)
+        public SIPRequest GetInDialogRequest(SIPMethodsEnum method, SIPURI target = null)
         {
             CSeq++;
 
-            SIPRequest inDialogRequest = new SIPRequest(method, RemoteTarget);
+            SIPRequest inDialogRequest = new SIPRequest(method, target ?? RemoteTarget);
             SIPFromHeader fromHeader = SIPFromHeader.ParseFromHeader(LocalUserField.ToString());
             SIPToHeader toHeader = SIPToHeader.ParseToHeader(RemoteUserField.ToString());
             int cseq = CSeq;

@@ -556,7 +556,7 @@ namespace SIPSorcery.SIP.App
         public SIPServerUserAgent AcceptCall(SIPRequest inviteRequest)
         {
             UASInviteTransaction uasTransaction = new UASInviteTransaction(m_transport, inviteRequest, m_outboundProxy);
-            SIPServerUserAgent uas = new SIPServerUserAgent(m_transport, m_outboundProxy, null, null, SIPCallDirection.In, null, null, uasTransaction);
+            SIPServerUserAgent uas = new SIPServerUserAgent(m_transport, m_outboundProxy, uasTransaction, null);
             uas.ClientTransaction.TransactionStateChanged += (tx) => OnTransactionStateChange?.Invoke(tx);
             uas.ClientTransaction.TransactionTraceMessage += (tx, msg) => OnTransactionTraceMessage?.Invoke(tx, msg);
             uas.CallCancelled += (pendingUas) =>
@@ -991,6 +991,11 @@ namespace SIPSorcery.SIP.App
                 {
                     OnTransferNotify?.Invoke(sipRequest.Body);
                 }
+            }
+            else if (m_isTransportExclusive)
+            {
+                SIPResponse notSupportedResponse = SIPResponse.GetResponse(sipRequest, SIPResponseStatusCodesEnum.NotImplemented, null);
+                await m_transport.SendResponseAsync(notSupportedResponse).ConfigureAwait(false);
             }
         }
 
@@ -1464,14 +1469,15 @@ namespace SIPSorcery.SIP.App
                 }
                 else
                 {
-                    logger.LogDebug($"Call attempt was answered with {sipResponse.ShortDescription} but an {setDescriptionResult} error occurred setting the remote description.");
+                    logger.LogWarning($"Call attempt was answered with {sipResponse.ShortDescription} but an {setDescriptionResult} error occurred setting the remote description.");
                     ClientCallFailed?.Invoke(uac, $"Failed to set the remote description {setDescriptionResult}", sipResponse);
+                    uac.SIPDialogue?.Hangup(this.m_transport, this.m_outboundProxy);
                     CallEnded();
                 }
             }
             else
             {
-                logger.LogDebug($"Call attempt was answered with failure response {sipResponse.ShortDescription}.");
+                logger.LogWarning($"Call attempt was answered with failure response {sipResponse.ShortDescription}.");
                 ClientCallFailed?.Invoke(uac, sipResponse.ReasonPhrase, sipResponse);
                 CallEnded();
             }
@@ -1606,7 +1612,7 @@ namespace SIPSorcery.SIP.App
 
             if (IsOnLocalHold && IsOnRemoteHold)
             {
-                streamStatus = MediaStreamStatusEnum.None;
+                streamStatus = MediaStreamStatusEnum.Inactive;
             }
             else if (!IsOnLocalHold && !IsOnRemoteHold)
             {

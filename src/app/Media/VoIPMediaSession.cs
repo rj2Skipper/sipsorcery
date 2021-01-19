@@ -24,7 +24,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using SIPSorcery.Net;
 using SIPSorcery.SIP.App;
-using SIPSorceryMedia.Abstractions.V1;
+using SIPSorceryMedia.Abstractions;
 
 namespace SIPSorcery.Media
 {
@@ -67,10 +67,15 @@ namespace SIPSorcery.Media
 
         public event VideoSinkSampleDecodedDelegate OnVideoSinkSample;
 
+        public VoIPMediaSession(MediaEndPoints mediaEndPoint, VideoTestPatternSource testPatternSource)
+            : this(mediaEndPoint, null, 0, testPatternSource)
+        { }
+
         public VoIPMediaSession(
             MediaEndPoints mediaEndPoint,
             IPAddress bindAddress = null,
-            int bindPort = 0)
+            int bindPort = 0,
+             VideoTestPatternSource testPatternSource = null)
             : base(false, false, false, bindAddress, bindPort)
         {
             if (mediaEndPoint == null)
@@ -99,10 +104,14 @@ namespace SIPSorcery.Media
                 Media.VideoSource.OnVideoSourceEncodedSample += base.SendVideo;
                 Media.VideoSource.OnVideoSourceError += VideoSource_OnVideoSourceError;
 
-                // The test pattern source is used as failover if the webcam initialisation fails.
-                // It's also used as the video stream if the call is put on hold.
-                _videoTestPatternSource = new VideoTestPatternSource();
-                _videoTestPatternSource.OnVideoSourceRawSample += Media.VideoSource.ExternalVideoSourceRawSample;
+                if (testPatternSource != null)
+                {
+                    // The test pattern source is used as failover if the webcam initialisation fails.
+                    // It's also used as the video stream if the call is put on hold.
+                    _videoTestPatternSource = testPatternSource;
+                    _videoTestPatternSource.OnVideoSourceEncodedSample += base.SendVideo;
+                    //_videoTestPatternSource.OnVideoSourceRawSample += Media.VideoSource.ExternalVideoSourceRawSample;
+                }
             }
 
             if (Media.VideoSink != null)
@@ -133,21 +142,21 @@ namespace SIPSorcery.Media
             }
         }
 
-        private void AudioFormatsNegotiated(List<SDPMediaFormat> audoFormats)
+        private void AudioFormatsNegotiated(List<AudioFormat> audoFormats)
         {
-            var audioCodec = SDPMediaFormatInfo.GetAudioCodecForSdpFormat(audoFormats.First().FormatCodec);
-            logger.LogDebug($"Setting audio sink and source format to {audioCodec}.");
-            Media.AudioSink?.SetAudioSinkFormat(audioCodec);
-            Media.AudioSource?.SetAudioSourceFormat(audioCodec);
-            _audioExtrasSource.SetAudioSourceFormat(audioCodec);
+            var audioFormat = audoFormats.First();
+            logger.LogDebug($"Setting audio sink and source format to {audioFormat.FormatID}:{audioFormat.Codec} {audioFormat.ClockRate}.");
+            Media.AudioSink?.SetAudioSinkFormat(audioFormat);
+            Media.AudioSource?.SetAudioSourceFormat(audioFormat);
+            _audioExtrasSource.SetAudioSourceFormat(audioFormat);
         }
 
-        private void VideoFormatsNegotiated(List<SDPMediaFormat> videoFormats)
+        private void VideoFormatsNegotiated(List<VideoFormat> videoFormats)
         {
-            var videoCodec = SDPMediaFormatInfo.GetVideoCodecForSdpFormat(videoFormats.First().FormatCodec);
-            logger.LogDebug($"Setting video sink and source format to {videoCodec}.");
-            Media.VideoSink?.SetVideoSinkFormat(videoCodec);
-            Media.VideoSource?.SetVideoSourceFormat(videoCodec);
+            var videoFormat = videoFormats.First();
+            logger.LogDebug($"Setting video sink and source format to {videoFormat.FormatID}:{videoFormat.Codec}.");
+            Media.VideoSink?.SetVideoSinkFormat(videoFormat);
+            Media.VideoSource?.SetVideoSourceFormat(videoFormat);
         }
 
         public async override Task Start()
@@ -248,7 +257,7 @@ namespace SIPSorcery.Media
             {
                 await Media.VideoSource.PauseVideo();
 
-                _videoTestPatternSource.SetEmbeddedTestPatternPath(VideoTestPatternSource.TEST_PATTERN_INVERTED_RESOURCE_PATH);
+                //_videoTestPatternSource.SetEmbeddedTestPatternPath(VideoTestPatternSource.TEST_PATTERN_INVERTED_RESOURCE_PATH);
                 _videoTestPatternSource.SetFrameRate(TEST_PATTERN_ONHOLD_FPS);
 
                 Media.VideoSource.ForceKeyFrame();
@@ -268,7 +277,7 @@ namespace SIPSorcery.Media
             {
                     await _videoTestPatternSource.PauseVideo();
 
-                _videoTestPatternSource.SetEmbeddedTestPatternPath(VideoTestPatternSource.TEST_PATTERN_RESOURCE_PATH);
+                //_videoTestPatternSource.SetEmbeddedTestPatternPath(VideoTestPatternSource.TEST_PATTERN_RESOURCE_PATH);
                 _videoTestPatternSource.SetFrameRate(TEST_PATTERN_FPS);
 
                 Media.VideoSource.ForceKeyFrame();

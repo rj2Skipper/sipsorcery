@@ -24,6 +24,7 @@ using SIPSorcery.Net;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
 using NAudio.Wave;
+using SIPSorceryMedia.Abstractions;
 using SIPSorceryMedia.Windows;
 
 namespace demo
@@ -78,7 +79,7 @@ namespace demo
 
                 for (int index = 0; index < sample.Length; index++)
                 {
-                    if (rtpPacket.Header.PayloadType == (int)SDPMediaFormatsEnum.PCMA)
+                    if (rtpPacket.Header.PayloadType == (int)SDPWellKnownMediaFormatsEnum.PCMA)
                     {
                         short pcm = NAudio.Codecs.ALawDecoder.ALawToLinearSample(sample[index]);
                         byte[] pcmSample = new byte[] { (byte)(pcm & 0xFF), (byte)(pcm >> 8) };

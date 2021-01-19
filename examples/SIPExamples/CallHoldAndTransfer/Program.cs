@@ -29,7 +29,7 @@ using Serilog.Extensions.Logging;
 using SIPSorcery.Media;
 using SIPSorcery.SIP;
 using SIPSorcery.SIP.App;
-using SIPSorceryMedia.Abstractions.V1;
+using SIPSorceryMedia.Abstractions;
 using SIPSorceryMedia.Windows;
 
 namespace SIPSorcery
@@ -69,7 +69,7 @@ namespace SIPSorcery
             EnableTraceLogs(sipTransport);
 
             var winAudio = new WindowsAudioEndPoint(new AudioEncoder());
-            winAudio.RestrictCodecs(new List<AudioCodecsEnum> { AudioCodecsEnum.PCMU });
+            winAudio.RestrictFormats(formats => formats.Codec == AudioCodecsEnum.PCMU);
 
             // Create a client/server user agent to place a call to a remote SIP server along with event handlers for the different stages of the call.
             var userAgent = new SIPUserAgent(sipTransport, null, true);

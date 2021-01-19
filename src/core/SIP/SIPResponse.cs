@@ -104,7 +104,7 @@ namespace SIPSorcery.SIP
                 sipResponse.ReasonPhrase = statusLine.Substring(3).Trim();
 
                 sipResponse.Header = SIPHeader.ParseSIPHeaders(sipMessageBuffer.SIPHeaders);
-                sipResponse.Body = sipMessageBuffer.Body;
+                sipResponse.BodyBuffer = sipMessageBuffer.Body;
 
                 return sipResponse;
             }
@@ -181,7 +181,13 @@ namespace SIPSorcery.SIP
             copy.StatusCode = StatusCode;
             copy.ReasonPhrase = ReasonPhrase;
             copy.Header = Header?.Copy();
-            copy.Body = Body;
+            
+            if (_body != null && _body.Length > 0)
+            {
+                copy._body = new byte[_body.Length];
+                Buffer.BlockCopy(copy._body, 0, copy._body, 0, copy._body.Length);
+            }
+
             copy.Created = Created;
             copy.LocalSIPEndPoint = LocalSIPEndPoint?.CopyOf();
             copy.RemoteSIPEndPoint = RemoteSIPEndPoint?.CopyOf();
@@ -251,7 +257,7 @@ namespace SIPSorcery.SIP
             catch (Exception excp)
             {
                 logger.LogError("Exception SIPResponse.GetResponse. " + excp.Message);
-                throw excp;
+                throw;
             }
         }
 
@@ -290,6 +296,13 @@ namespace SIPSorcery.SIP
                 logger.LogError("Exception SIPResponse.GetResponse. " + excp.Message);
                 throw;
             }
+        }
+
+        public byte[] GetBytes()
+        {
+            string reasonPhrase = (!ReasonPhrase.IsNullOrBlank()) ? " " + ReasonPhrase : null;
+            string firstLine = SIPVersion + " " + StatusCode + reasonPhrase + m_CRLF;
+            return base.GetBytes(firstLine);
         }
     }
 }

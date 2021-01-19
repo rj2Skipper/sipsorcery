@@ -1,7 +1,7 @@
 ﻿//-----------------------------------------------------------------------------
 // Filename: WebRTCWebSocketPeer.cs
 //
-// Description: This class is not a required component for using WebRTC. It is a
+// Description: This class is NOT a required component for using WebRTC. It is a
 // convenience class provided to assist when using a web socket server for the 
 // WebRTC signalling.
 //
@@ -16,16 +16,15 @@
 //-----------------------------------------------------------------------------
 
 using System;
-using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using WebSocketSharp;
 using WebSocketSharp.Server;
 
 namespace SIPSorcery.Net
 {
     /// <summary>
-    /// This class is not a required component for using WebRTC. It is a convenience
+    /// This class is NOT a required component for using WebRTC. It is a convenience
     /// class provided to assist when using a web socket server for the  WebRTC 
     /// signalling.
     /// </summary>
@@ -34,7 +33,21 @@ namespace SIPSorcery.Net
         private ILogger logger = SIPSorcery.Sys.Log.Logger;
 
         private RTCPeerConnection _pc;
-        public Func<RTCPeerConnection> CreatePeerConnection;
+        public RTCPeerConnection RTCPeerConnection => _pc;
+
+        /// <summary>
+        /// Optional property to allow the peer connection SDP offer options to be set.
+        /// </summary>
+        public RTCOfferOptions OfferOptions {get; set;}
+
+        /// <summary>
+        /// Optional filter that can be applied to remote ICE candidates. The filter is 
+        /// primarily intended for use in testing. In real application scenarios it's 
+        /// normally desirable to accept all remote ICE candidates.
+        /// </summary>
+        public Func<RTCIceCandidateInit, bool> FilterRemoteICECandidates { get; set; }
+
+        public Func<Task<RTCPeerConnection>> CreatePeerConnection;
 
         public WebRTCWebSocketPeer()
         { }
@@ -43,15 +56,29 @@ namespace SIPSorcery.Net
         {
             logger.LogDebug($"OnMessage: {e.Data}");
 
-            if (Regex.Match(e.Data, @"^.*?candidate.*?,").Success)
+            if (RTCIceCandidateInit.TryParse(e.Data, out var iceCandidateInit))
             {
                 logger.LogDebug("Got remote ICE candidate.");
-                var iceCandidateInit = JsonConvert.DeserializeObject<RTCIceCandidateInit>(e.Data);
-                _pc.addIceCandidate(iceCandidateInit);
+
+                bool useCandidate = true;
+                if(FilterRemoteICECandidates != null && !string.IsNullOrWhiteSpace(iceCandidateInit.candidate))
+                {
+                    useCandidate = FilterRemoteICECandidates(iceCandidateInit);
+                }
+
+                if (!useCandidate)
+                {
+                    logger.LogDebug($"WebRTCWebSocketPeer excluding ICE candidate due to filter: {iceCandidateInit.candidate}");
+                }
+                else
+                {
+                    _pc.addIceCandidate(iceCandidateInit);
+                }
             }
-            else
+            else if (RTCSessionDescriptionInit.TryParse(e.Data, out var descriptionInit))
             {
-                RTCSessionDescriptionInit descriptionInit = JsonConvert.DeserializeObject<RTCSessionDescriptionInit>(e.Data);
+                logger.LogDebug($"Got remote SDP, type {descriptionInit.type}.");
+
                 var result = _pc.setRemoteDescription(descriptionInit);
                 if (result != SetDescriptionResultEnum.OK)
                 {
@@ -59,6 +86,10 @@ namespace SIPSorcery.Net
                     _pc.Close("failed to set remote description");
                     this.Close();
                 }
+            }
+            else
+            {
+                logger.LogWarning($"websocket-server could not parse JSON message. {e.Data}");
             }
         }
 
@@ -68,9 +99,9 @@ namespace SIPSorcery.Net
 
             logger.LogDebug($"Web socket client connection from {Context.UserEndPoint}.");
 
-            _pc = CreatePeerConnection();
+            _pc = await CreatePeerConnection();
 
-            var offerSdp = _pc.createOffer(null);
+            var offerSdp = _pc.createOffer(OfferOptions);
             await _pc.setLocalDescription(offerSdp);
             _pc.onicecandidate += (iceCandidate) =>
             {
@@ -83,8 +114,7 @@ namespace SIPSorcery.Net
             logger.LogDebug($"Sending SDP offer to client {Context.UserEndPoint}.");
             logger.LogDebug(offerSdp.sdp);
 
-            Context.WebSocket.Send(JsonConvert.SerializeObject(offerSdp,
-                 new Newtonsoft.Json.Converters.StringEnumConverter()));
+            Context.WebSocket.Send(offerSdp.toJSON());
         }
     }
 }
